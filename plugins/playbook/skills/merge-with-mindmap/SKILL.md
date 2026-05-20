@@ -39,6 +39,37 @@ judgment (the MIND_MAP semantic merge, .gitignore style) and points at
 `tasks merge-doctor` for the parts that are purely mechanical (contamination
 detection, stranded markers, legacy-path files).
 
+## Continuation policy
+
+**Run Steps 0–7 continuously without asking the user.** The single mandatory
+pause is at Step 8 (push), because that's the first irreversible /
+shared-state action — everything before it is local commits the user can
+`git reset --hard HEAD~1` if they don't like the result.
+
+When `tasks merge-doctor` reports findings, read the labeled sections:
+
+- **`[ACTIONABLE]`** — stop, fix the underlying issue in the next step, then
+  re-run the doctor.
+- **`[EXPECTED]`** — mid-merge surface that Step 5 is about to resolve.
+  Continue. (Only ever appears in mid-merge inspection mode — `MERGE_HEAD`
+  present. After the merge commit, any surviving marker becomes
+  `[ACTIONABLE]`.)
+- **`[INFORMATIONAL]`** — a path on disk that isn't tracked or gitignored,
+  so it could end up in a commit if you `git add` blindly. Continue, but
+  note it; don't surface it to the user as a problem.
+
+`tasks merge-doctor` exits 0 when there are zero actionable findings — even
+if `[EXPECTED]` and `[INFORMATIONAL]` lines were printed. Trust the exit
+code: 0 means proceed, 1 means a real problem you have to fix.
+
+**At Step 8**, show the user the merge commit's `git diff` and the new
+`MIND_MAP.md` head, then ask exactly one clear question:
+
+> "Push to `<remote>/<target>`?"
+
+Accept `yes`, `no`, or `revise X`. Do not present multi-option menus
+("continue / pause / abort?") at any earlier step.
+
 ## Usage
 
 ```
@@ -205,9 +236,10 @@ different `.agent/<user>/...`:
 
 ### Step 5 — Semantic MIND_MAP merge
 
-`MIND_MAP.md` is the load-bearing knowledge index and a textual three-way
-merge will produce useless conflict markers in narrative prose. Resolve it
-semantically:
+A textual three-way merge produces useless conflict markers in narrative
+prose. Synthesize the resolution instead — this is prose-reading +
+prose-writing, the same shape of work as `/playbook:mindmap`. Do it
+continuously (per the Continuation policy above); don't pause to ask.
 
 1. **Pick the richer side** by the heuristic from Step 0.
 
@@ -228,16 +260,15 @@ semantically:
    richer one.
 
 4. **Remove conflict markers.** Every `<<<<<<`, `=======`, `>>>>>>` must be
-   gone. Run `tasks merge-doctor` again to confirm.
+   gone. Run `tasks merge-doctor` again to confirm — markers in
+   `MIND_MAP.md` should now disappear from `[EXPECTED]` because the file is
+   no longer in `git ls-files --unmerged` once you `git add` it in Step 7.
 
-5. **Acceptance test:** a reader who has never seen either branch should be
-   able to read the merged MIND_MAP and understand both the merged state
-   *and* this merge itself. If they can't tell the merge happened from the
-   text alone, the History node is too thin.
-
-This is the only step in the procedure that is genuinely judgment-heavy.
-The rest is mechanical. Don't try to automate this — automation here either
-loses semantics or produces verbose chaff.
+5. **Re-read pass.** Read the merged MIND_MAP back as if you'd never seen
+   either branch. Can you tell what merged? Can you tell what each side
+   contributed? If the answer to either is "no", the History node is too
+   thin — go back and beef it up. The user will see this same MIND_MAP head
+   at Step 8 before any push happens.
 
 ### Step 6 — `.gitignore` resolution
 
@@ -272,10 +303,14 @@ Spot-check (read the actual file content):
 - `.gitignore` — globstars present, redundancies removed, install-local
   entries added.
 
-### Step 8 — Commit and push
+### Step 8 — Commit, present, and push (the user-gate moment)
 
-Create a real merge commit (not a fast-forward) with a structured message
-that documents what was done:
+**This is the only mandatory user pause in the whole procedure.** Everything
+before this step is local, reversible state. The push is the irreversible /
+shared-state action — so the user reviews and decides here.
+
+First create the merge commit (not a fast-forward) with a structured
+message that documents what was done:
 
 ```
 Merge <source> into <target>
@@ -292,17 +327,34 @@ Resolutions:
   merge-<source> history node and updated routing.
 - .gitignore: switched to ** globstar form; ignored .agent/current_user.
 
-Verified: tasks merge-doctor reports clean.
+Verified: tasks merge-doctor reports SAFE TO CONTINUE.
 ```
 
-Push:
+Then show the user three things, in this order:
 
-```bash
-git push <remote> <target>
-```
+1. `git log -1 --stat` of the merge commit (file list + insertion stats).
+2. `git show HEAD` for the merge commit (the full diff, especially
+   `MIND_MAP.md` — the load-bearing piece).
+3. The new `MIND_MAP.md` head (e.g. `head -40 MIND_MAP.md`) so the routing
+   nodes are visible at a glance.
 
-If the remote is a non-bare working clone with `<target>` checked out, the
-push will be rejected. Surface this to the user — the right fix is in the
+Then ask exactly **one** clear question:
+
+> "Push to `<remote>/<target>`?"
+
+Accept three answers:
+
+- `yes` → run `git push <remote> <target>` and report the result.
+- `no` → stop. The merge commit stays in the local branch; user can
+  `git reset --hard HEAD~1` to undo it or amend.
+- `revise X` → make the requested change, amend the merge commit
+  (`git commit --amend`), re-present the diff, ask the same question.
+
+**Do not** present multi-option menus ("continue / abort / inspect?") or
+ask follow-up questions before the user has answered the push question.
+
+If the remote rejects the push because it's a non-bare working clone with
+`<target>` checked out, surface that to the user — the right fix is in the
 remote (check out another branch, or set
 `receive.denyCurrentBranch=updateInstead` after cleaning the working tree).
 **Do not change remote config without explicit consent.**
