@@ -98,7 +98,7 @@ class CodexAdapter(ProviderAdapter):
             input=full_prompt, capture_output=True, text=True,
             timeout=timeout_secs,
         )
-        return result.stdout or "(no output)"
+        return _sandbox.format_judge_output(result)
 
     # ── Identity ─────────────────────────────────────────────────────────────
 

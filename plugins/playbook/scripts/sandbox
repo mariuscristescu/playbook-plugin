@@ -42,8 +42,13 @@ case "$SCRIPT_DIR" in
     *)         PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)" ;;
 esac
 
-# Claude-specific shim: translate --no-hooks into --settings <empty-file> in
-# the forwarded args (preserves prior behavior of scripts/sandbox).
+# Claude-specific shim: translate --no-hooks into claude's --safe-mode.
+# The old `--settings <empty {}>` shim only overrode one settings layer and
+# could NOT suppress plugin-registered hooks (our hooks register via the plugin
+# manifest, not settings) — ~60% of nested PDF mind-map runs leaked parent
+# hooks (T136). --safe-mode (claude 2.1.169) disables CLAUDE.md + plugins +
+# skills + hooks + MCP at the source, and is OAuth-compatible (unlike --bare).
+# Probed on 2.1.170: suppresses the plugin hooks with OAuth intact (T137 C1).
 NO_HOOKS=false
 FWD=()
 in_after_ddash=false
@@ -59,20 +64,19 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$NO_HOOKS" = true ]; then
-    NOHOOKS_FILE="/tmp/playbook-no-hooks-$$.json"
-    echo '{}' > "$NOHOOKS_FILE"
-    # Inject --settings AFTER -- separator (if present) else append at end.
+    # Inject --safe-mode AFTER the -- separator (claude top-level flag); if no
+    # separator was given, append one and the flag at the end.
     new_fwd=()
     injected=false
     for arg in "${FWD[@]}"; do
         new_fwd+=("$arg")
         if [ "$arg" = "--" ] && [ "$injected" = false ]; then
-            new_fwd+=(--settings "$NOHOOKS_FILE")
+            new_fwd+=(--safe-mode)
             injected=true
         fi
     done
     if [ "$injected" = false ]; then
-        new_fwd+=(-- --settings "$NOHOOKS_FILE")
+        new_fwd+=(-- --safe-mode)
     fi
     FWD=("${new_fwd[@]}")
 fi
