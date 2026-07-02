@@ -1528,12 +1528,16 @@ def main():
 
             if model:
                 print(f"  (note: agy has no model flag — ignoring --model {model}; uses agy's UI-selected model)", flush=True)
-            # agy v1.0.2 quirks: --print mode ignores cwd, needs --add-dir;
+            # Prompt goes on STDIN, not argv: `agy --print` with no positional
+            # prompt reads stdin (agy >=1.0.15). Windows caps the command line
+            # at 32,767 chars (WinError 206), so full_prompt on argv overflows
+            # it — same fix as the claude branch above and the adapter's
+            # run_headless_judge. --print mode ignores cwd, needs --add-dir;
             # no -m/--model flag yet (uses whatever the agy UI has set).
             # Bypass (--dangerously-skip-permissions) prepended by sandbox.
             agy_args = [
                 "--add-dir", str(project_path),
-                "--print", full_prompt,
+                "--print",
                 "--print-timeout", "300s",
             ]
 
@@ -1546,6 +1550,7 @@ def main():
                 "agy", agy_args,
                 project_root=project_path,
                 env=agy_env,
+                input=full_prompt,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
