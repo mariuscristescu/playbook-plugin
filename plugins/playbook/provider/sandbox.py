@@ -564,6 +564,12 @@ def run(
     child_env = _child_env(env)
     wrapped = _wrapped_argv(agent, agent_args, project, extra_rw, project_writable)
 
+    if kwargs.get("text") or isinstance(kwargs.get("input"), str):
+        # Windows text-mode pipes default to the ANSI code page (cp1252);
+        # any non-cp1252 char in stdin/stdout (e.g. U+2197 in MIND_MAP.md)
+        # kills the stdin writer thread. Pin UTF-8; tolerate stray bytes out.
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
     return subprocess.run(
         wrapped,
         cwd=str(project),
