@@ -36,7 +36,7 @@ def _capture_recent_chat(project_path: Path, max_messages: int = 10,
     if not chat_log.exists():
         return []
 
-    content = chat_log.read_text(encoding="utf-8")
+    content = chat_log.read_text(encoding="utf-8", errors="replace")
     # Split into message blocks on --- separator
     msg_pattern = re.compile(
         r'\*\*\[(M\d+)\]\*\*\s+\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]\s+`\w+`\s*\n\s*\n(.*?)(?=\n---|\Z)',
@@ -475,7 +475,7 @@ def _rewrite_task_refs(project_path: Path, agent_dir: Path, rename_map: dict[int
     # Rewrite chat_log.md
     chat_log = agent_dir / "chat_log.md"
     if chat_log.exists():
-        original = chat_log.read_text(encoding="utf-8")
+        original = chat_log.read_text(encoding="utf-8", errors="replace")
         updated = _apply(original)
         if updated != original:
             chat_log.write_text(updated, encoding="utf-8")
@@ -526,7 +526,7 @@ def _prepare_merge_chatlog(project_path: Path, agent_dir: Path, target: str,
         print("Chat log: not found — skipping.")
         return
 
-    current_text = chat_log.read_text(encoding="utf-8")
+    current_text = chat_log.read_text(encoding="utf-8", errors="replace")
     new_mids = [int(m) for m in re.findall(r"\*\*\[M(\d+)\]\*\*", current_text) if int(m) > base_last]
 
     if not new_mids:
@@ -1098,7 +1098,8 @@ def main():
         # Parse flags
         review_mode = "plan"
         web_search = False
-        timeout_secs = 300  # 5 min default
+        timeout_flag = None  # --timeout override (raw str); resolved from config below
+        budget_flag = None   # --budget override (claude judges only)
         extra_prompt = ""
         no_mind_map = False
         bare = False
@@ -1116,7 +1117,10 @@ def main():
                 web_search = True
                 i += 1
             elif cmd_args[i] == "--timeout" and i + 1 < len(cmd_args):
-                timeout_secs = int(cmd_args[i + 1])
+                timeout_flag = cmd_args[i + 1]
+                i += 2
+            elif cmd_args[i] == "--budget" and i + 1 < len(cmd_args):
+                budget_flag = cmd_args[i + 1]
                 i += 2
             elif cmd_args[i] == "--prompt" and i + 1 < len(cmd_args):
                 extra_prompt = cmd_args[i + 1]
@@ -1142,10 +1146,14 @@ def main():
         # Task number is optional; --prompt required when omitted
         if not task_num and not extra_prompt:
             print("Error: 'panel-review' requires a task number or --prompt", file=sys.stderr)
-            print("Usage: tasks panel-review [<number>] [--mode plan|impl] [--models codex:gpt-5.5,agy,...] [--prompt \"...\"] [--no-mind-map] [--bare] [--web-search] [--timeout SECONDS]", file=sys.stderr)
+            print("Usage: tasks panel-review [<number>] [--mode plan|impl] [--models codex:gpt-5.5,agy,...] [--prompt \"...\"] [--no-mind-map] [--bare] [--web-search] [--timeout SECONDS] [--budget USD]", file=sys.stderr)
             sys.exit(1)
 
         project_path = find_project_root()
+        # Review knobs — precedence: --flag > env var > .agent/config.json > default.
+        from tasks.core import resolve_judge_budget, resolve_review_timeout
+        timeout_secs = resolve_review_timeout(project_path, timeout_flag)
+        panel_budget = resolve_judge_budget(project_path, budget_flag)
 
         # Resolve task file if task number given
         task_file = None
@@ -1178,7 +1186,7 @@ def main():
                 # Taskless: include recent chat log as project context
                 chat_log = resolve_agent_dir(project_path) / "chat_log.md"
                 if chat_log.exists():
-                    chat_content = chat_log.read_text(encoding="utf-8")
+                    chat_content = chat_log.read_text(encoding="utf-8", errors="replace")
                     max_chat = MAX_CONTEXT_CHARS // 2
                     if len(chat_content) > max_chat:
                         chat_content = "[... truncated ...]\n\n" + chat_content[-max_chat:]
@@ -1278,6 +1286,7 @@ def main():
                     system_context=system_context,
                     web_search=web_search,
                     timeout_secs=timeout_secs,
+                    budget_usd=panel_budget,
                 )
                 return label, output
             except subprocess.TimeoutExpired:
@@ -1341,7 +1350,7 @@ def main():
         review_cmd = cmd
         if not cmd_args:
             print(f"Error: '{review_cmd}' requires a task number", file=sys.stderr)
-            print(f"Usage: tasks {review_cmd} <number> [--backend codex|claude|agy|pi] [--model <variant>] [--prompt \"...\"]  (default backend: models.json default_judge, ships codex)", file=sys.stderr)
+            print(f"Usage: tasks {review_cmd} <number> [--backend codex|claude|agy|pi] [--model <variant>] [--prompt \"...\"] [--timeout SECONDS] [--budget USD]  (default backend: models.json default_judge, ships codex; --budget is claude-only)", file=sys.stderr)
             sys.exit(1)
 
         import subprocess
@@ -1350,6 +1359,8 @@ def main():
         backend = None   # explicit --backend; else from models.json default_judge
         model = None     # explicit --model (variant within the backend)
         extra_prompt = ""
+        timeout_flag = None   # --timeout N  (overrides env / config / default)
+        budget_flag = None    # --budget N   (claude only; overrides env / config / default)
         remaining_args = []
         i = 0
         while i < len(cmd_args):
@@ -1361,6 +1372,12 @@ def main():
                 i += 2
             elif cmd_args[i] == "--prompt" and i + 1 < len(cmd_args):
                 extra_prompt = cmd_args[i + 1]
+                i += 2
+            elif cmd_args[i] == "--timeout" and i + 1 < len(cmd_args):
+                timeout_flag = cmd_args[i + 1]
+                i += 2
+            elif cmd_args[i] == "--budget" and i + 1 < len(cmd_args):
+                budget_flag = cmd_args[i + 1]
                 i += 2
             else:
                 remaining_args.append(cmd_args[i])
@@ -1397,6 +1414,11 @@ def main():
         if task_num.isdigit():
             task_num = task_num.zfill(3)
         project_path = find_project_root()
+        # Review knobs — precedence: --flag > env var > .agent/config.json >
+        # built-in default (resolvers live in tasks.core).
+        from tasks.core import resolve_judge_budget, resolve_review_timeout
+        review_timeout = resolve_review_timeout(project_path, timeout_flag)
+        review_budget = resolve_judge_budget(project_path, budget_flag)
         tasks_dir = resolve_agent_dir(project_path) / "tasks"
         matches = list(tasks_dir.glob(f"{task_num}-*/task.md"))
         if not matches:
@@ -1434,6 +1456,18 @@ def main():
         prompt_fn = plan_review_prompt if review_mode == "plan" else impl_review_prompt
         review_label = "plan review" if review_mode == "plan" else "impl review"
 
+        def _bail_review_timeout():
+            # A timed-out review exits BEFORE the log-save below, so any previous
+            # review log is left untouched (never overwritten with a partial run).
+            print(
+                f"\n{review_label} timed out after {review_timeout}s "
+                "(raise it with --timeout, PLAYBOOK_REVIEW_TIMEOUT_SECS, or "
+                ".agent/config.json review_timeout_secs). Previous review log "
+                "left untouched.",
+                file=sys.stderr, flush=True,
+            )
+            sys.exit(1)
+
         if backend == "claude":
             claude_bin = shutil.which("claude")
             if not claude_bin:
@@ -1453,22 +1487,34 @@ def main():
             # The judge is a read-only evaluator sandboxed via provider.sandbox
             # (write containment via seatbelt/bwrap). PLAYBOOK_SESSION_ID=judge
             # above lets hooks identify judge sessions if needed.
-            claude_args = ["-p", "--max-budget-usd", "2"]
+            claude_args = ["-p", "--max-budget-usd", review_budget]
             if model:
                 from provider.adapters.claude import ClaudeAdapter
                 claude_args += ["--model", ClaudeAdapter._MODEL_MAP.get(model, model)]
-            claude_args += ["--append-system-prompt", system_context, prompt]
+            # Windows: passing system_context as an argv element overflows the
+            # Win32 command-line cap (32,767 chars → WinError 206). `claude -p`
+            # with no positional prompt reads stdin, so pipe context+prompt
+            # instead of putting them on argv. encoding="utf-8" keeps the pipe
+            # (and stdout decode) off the cp1252 locale default on Windows.
+            full_prompt = f"{system_context}\n\n---\n\n{prompt}"
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (claude) on {task_path}...", flush=True)
-            result = _sandbox.run(
-                "claude",
-                claude_args,
-                project_root=project_path,
-                env=env,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = _sandbox.run(
+                    "claude",
+                    claude_args,
+                    project_root=project_path,
+                    env=env,
+                    input=full_prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=review_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _bail_review_timeout()
 
         elif backend == "codex":
             if not shutil.which("codex"):
@@ -1485,7 +1531,11 @@ def main():
             # after `exec` by provider.sandbox._compose_agent_argv.
             codex_args = ["exec"]
             if model:
-                codex_args += ["-m", model]
+                from provider.adapters.codex import _split_reasoning_effort
+                model_id, effort = _split_reasoning_effort(model)
+                codex_args += ["-m", model_id]
+                if effort:
+                    codex_args += ["-c", f"model_reasoning_effort={effort}"]
             codex_args += [
                 "-s", "workspace-write",
                 "--ephemeral",
@@ -1499,14 +1549,20 @@ def main():
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (codex) on {task_path}...", flush=True)
-            result = _sandbox.run(
-                "codex", codex_args,
-                project_root=project_path,
-                env=codex_env,
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = _sandbox.run(
+                    "codex", codex_args,
+                    project_root=project_path,
+                    env=codex_env,
+                    input=full_prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=review_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _bail_review_timeout()
 
         elif backend == "antigravity":  # agy
             if not shutil.which("agy"):
@@ -1520,13 +1576,19 @@ def main():
 
             if model:
                 print(f"  (note: agy has no model flag — ignoring --model {model}; uses agy's UI-selected model)", flush=True)
-            # agy v1.0.2 quirks: --print mode ignores cwd, needs --add-dir;
+            # Prompt goes on STDIN, not argv: `agy --print` with no positional
+            # prompt reads stdin (agy >=1.0.15). Windows caps the command line
+            # at 32,767 chars (WinError 206), so full_prompt on argv overflows
+            # it — same fix as the claude branch above and the adapter's
+            # run_headless_judge. --print mode ignores cwd, needs --add-dir;
             # no -m/--model flag yet (uses whatever the agy UI has set).
             # Bypass (--dangerously-skip-permissions) prepended by sandbox.
             agy_args = [
                 "--add-dir", str(project_path),
-                "--print", full_prompt,
-                "--print-timeout", "300s",
+                "--print",
+                # agy's own internal wait — keep it in step with the subprocess
+                # timeout so the two limits never disagree.
+                "--print-timeout", f"{review_timeout}s",
             ]
 
             agy_env = os.environ.copy()
@@ -1534,13 +1596,20 @@ def main():
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (agy) on {task_path}...", flush=True)
-            result = _sandbox.run(
-                "agy", agy_args,
-                project_root=project_path,
-                env=agy_env,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = _sandbox.run(
+                    "agy", agy_args,
+                    project_root=project_path,
+                    env=agy_env,
+                    input=full_prompt,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=review_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _bail_review_timeout()
 
         else:  # pi (local Qwen via oMLX)
             if not (shutil.which("pi") or shutil.which("omlx")):
@@ -1563,18 +1632,37 @@ def main():
             if model:
                 pi_args += ["--model", model]
 
+            # Windows caps the whole command line at 32,767 chars (WinError 206);
+            # pi reads its prompt AND context from argv only (no verified stdin
+            # path), so fail fast with a clear message rather than a cryptic
+            # spawn failure — mirrors the guard in provider/adapters/pi.py.
+            if os.name == "nt":
+                payload = sum(len(a) + 1 for a in pi_args)
+                if payload > 30_000:
+                    print(f"Error: pi judge prompt+context is ~{payload} chars on argv; "
+                          "Windows caps the command line at 32,767 chars and pi reads its "
+                          "prompt from argv only — shrink the context or use another backend.",
+                          file=sys.stderr)
+                    sys.exit(1)
+
             pi_env = os.environ.copy()
             pi_env["PLAYBOOK_SESSION_ID"] = "judge"
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (pi) on {task_path}...", flush=True)
-            result = _sandbox.run(
-                "pi", pi_args,
-                project_root=project_path,
-                env=pi_env,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = _sandbox.run(
+                    "pi", pi_args,
+                    project_root=project_path,
+                    env=pi_env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=review_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _bail_review_timeout()
 
         if result.stdout:
             print(result.stdout, end="", flush=True)
@@ -1628,7 +1716,7 @@ def main():
         spans = []
         current_span = []
         inside = False
-        for line in chat_log.read_text(encoding="utf-8").splitlines():
+        for line in chat_log.read_text(encoding="utf-8", errors="replace").splitlines():
             stripped = line.strip()
             if not inside and open_tag.match(stripped):
                 inside = True
@@ -1785,7 +1873,7 @@ def main():
             r'(?:.*/)?(tasks (?:work|new) .+)$'
         )
         seen = set()
-        for line in bash_history.read_text(encoding="utf-8").splitlines():
+        for line in bash_history.read_text(encoding="utf-8", errors="replace").splitlines():
             m = pattern.match(line)
             if m:
                 cmd = m.group(2)
@@ -1829,7 +1917,7 @@ def main():
                     text = text[:max_line] + "..."
                 entries.append((msg_ts, 0, f"[{msg_id}] {text}"))
 
-        for line in chat_log.read_text(encoding="utf-8").splitlines():
+        for line in chat_log.read_text(encoding="utf-8", errors="replace").splitlines():
             stripped = line.strip()
             if not stripped:
                 continue
@@ -1860,7 +1948,7 @@ def main():
             r'(?:.*/)?(tasks (?:work|new) .+)$'
         )
         seen = set()
-        for line in bash_history.read_text(encoding="utf-8").splitlines():
+        for line in bash_history.read_text(encoding="utf-8", errors="replace").splitlines():
             m = task_pattern.match(line)
             if m:
                 task_cmd = m.group(2)
@@ -1905,7 +1993,7 @@ def main():
         work_re = re.compile(r'tasks work (\d+)')
         transitions = []  # [(timestamp, task_num_or_None)]
         seen = set()
-        for line in bash_history.read_text(encoding="utf-8").splitlines():
+        for line in bash_history.read_text(encoding="utf-8", errors="replace").splitlines():
             m = task_pattern.match(line)
             if m:
                 task_cmd = m.group(2)
@@ -1939,7 +2027,7 @@ def main():
         # Also detect existing tags to avoid double-tagging
         existing_tag = re.compile(r'^<!--\s*/?T\d+\s*-->$')
 
-        lines = chat_log.read_text(encoding="utf-8").splitlines(keepends=True)
+        lines = chat_log.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         output = []
         current_tag = None  # currently open tag (task number)
         tags_inserted = 0
@@ -2167,7 +2255,7 @@ def main():
                 print("Error: .agent/chat_log.md not found", file=sys.stderr)
                 sys.exit(1)
 
-            log_text = chat_log.read_text(encoding="utf-8")
+            log_text = chat_log.read_text(encoding="utf-8", errors="replace")
             # Parse message blocks: **[MNNN]** [YYYY-MM-DD HH:MM:SS UTC]
             msg_pattern = re.compile(
                 r'^(\*\*\[M\d+\]\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\].*)',
@@ -2297,6 +2385,7 @@ def main():
         project_path = find_project_root()
         passed = 0
         failed = 0
+        warned = 0
 
         def iter_hook_commands(node):
             if isinstance(node, dict):
@@ -2321,6 +2410,15 @@ def main():
             else:
                 failed += 1
 
+        def warn(name: str, detail: str = ""):
+            # Non-fatal advisory: surfaced but never counts as a failed check.
+            nonlocal warned
+            msg = f"  [WARN] {name}"
+            if detail:
+                msg += f" — {detail}"
+            print(msg)
+            warned += 1
+
         print("tasks doctor\n")
 
         # 1. Project structure
@@ -2330,6 +2428,37 @@ def main():
         check("project: CLAUDE.md exists", claude_md.exists())
         mind_map = project_path / "MIND_MAP.md"
         check("project: MIND_MAP.md exists", mind_map.exists())
+
+        # 1b. Optional per-install config (.agent/config.json). Advisory only:
+        # a missing/malformed file or bad value falls back to defaults at runtime,
+        # so these are warnings, not failures.
+        import json as _json
+        cfg_path = project_path / ".agent" / "config.json"
+        if cfg_path.exists():
+            try:
+                _cfg = _json.loads(cfg_path.read_text(encoding="utf-8", errors="replace"))
+            except (ValueError, OSError) as e:
+                warn("config: .agent/config.json parses", f"invalid JSON ({e}); defaults used")
+                _cfg = None
+            if isinstance(_cfg, dict):
+                _jb = _cfg.get("judge_budget_usd")
+                if _jb is not None:
+                    try:
+                        _ok = float(_jb) >= 0
+                    except (TypeError, ValueError):
+                        _ok = False
+                    if not _ok:
+                        warn("config: judge_budget_usd", f"{_jb!r} not a non-negative number; default $2 used")
+                _rt = _cfg.get("review_timeout_secs")
+                if _rt is not None:
+                    try:
+                        _ok = int(_rt) > 0
+                    except (TypeError, ValueError):
+                        _ok = False
+                    if not _ok:
+                        warn("config: review_timeout_secs", f"{_rt!r} not a positive integer; default 300s used")
+            elif _cfg is not None:
+                warn("config: .agent/config.json shape", "top-level value is not a JSON object; ignored")
 
         # 2. Unicode
         stdout_enc = getattr(sys.stdout, "encoding", "unknown") or "unknown"
@@ -2352,6 +2481,20 @@ def main():
 
         # 4. Hooks — check .claude/hooks/ (installed) or src/hooks/ (dev repo)
         hooks_dirs = [project_path / "scripts", project_path / ".claude" / "hooks", project_path / "src" / "hooks"]
+        # On a plugin install the hook scripts live at ${CLAUDE_PLUGIN_ROOT}/scripts
+        # (wired via the plugin's hooks.json), not in the project tree. Resolve
+        # that dir too so doctor doesn't false-negative "missing" on every
+        # plugin install even though the gates demonstrably fire.
+        _plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+        if _plugin_root and (Path(_plugin_root) / "scripts").is_dir():
+            hooks_dirs.append(Path(_plugin_root) / "scripts")
+        else:
+            _plugins_home = Path.home() / ".claude" / "plugins"
+            if _plugins_home.exists():
+                _found = sorted(_plugins_home.glob("**/playbook/scripts"),
+                                key=lambda p: p.stat().st_mtime, reverse=True)
+                if _found:
+                    hooks_dirs.append(_found[0])
         for hook_name in ["state-echo-hook", "task-gate-hook"]:
             found = False
             for hooks_dir in hooks_dirs:
@@ -2454,7 +2597,45 @@ def main():
             if cand.exists():
                 gate_lib = cand
                 break
-        if gate_lib:
+        if gate_lib and (sys.platform == "win32" or os.name == "nt"):
+            # Windows: the process-walk is skipped by both resolvers (disjoint
+            # MSYS vs native PID namespaces, see find_agent_root_pid). Two
+            # assertions: (1) the env-set path honors PLAYBOOK_SESSION_ID;
+            # (2) the env-UNSET path returns the shared constant
+            # 'pid-win-fallback' and gate-echo-lib.sh carries the same literal
+            # — that constant is the only thing preventing split-brain when the
+            # env var doesn't propagate. We deliberately don't shell out to
+            # bash: MSYS path resolution is unreliable when bash.exe is spawned
+            # from native Python, which would produce a spurious MISMATCH; the
+            # static literal check covers the bash side instead.
+            probe = "pid-doctor-probe"
+            saved = os.environ.get("PLAYBOOK_SESSION_ID")
+            os.environ["PLAYBOOK_SESSION_ID"] = probe
+            try:
+                py_sid = resolve_session_id()
+            finally:
+                if saved is None:
+                    os.environ.pop("PLAYBOOK_SESSION_ID", None)
+                else:
+                    os.environ["PLAYBOOK_SESSION_ID"] = saved
+            check("session-id: Python ≡ bash resolver", py_sid == probe,
+                  "env-authoritative on Windows (ancestor scan skipped)"
+                  if py_sid == probe else f"Python ignored PLAYBOOK_SESSION_ID: {py_sid!r}")
+            saved = os.environ.pop("PLAYBOOK_SESSION_ID", None)
+            try:
+                py_fallback = resolve_session_id()
+            finally:
+                if saved is not None:
+                    os.environ["PLAYBOOK_SESSION_ID"] = saved
+            bash_has_const = "pid-win-fallback" in gate_lib.read_text(
+                encoding="utf-8", errors="replace")
+            fallback_ok = py_fallback == "pid-win-fallback" and bash_has_const
+            check("session-id: env-unset fallback converges", fallback_ok,
+                  "both resolvers use constant 'pid-win-fallback'"
+                  if fallback_ok else
+                  f"Python fallback {py_fallback!r}; bash literal present: {bash_has_const}"
+                  " — split-brain risk when PLAYBOOK_SESSION_ID is unset")
+        elif gate_lib:
             import subprocess as _sub
             from tasks.core import find_agent_root_pid
             saved = os.environ.pop("PLAYBOOK_SESSION_ID", None)
@@ -2462,7 +2643,7 @@ def main():
                 find_agent_root_pid.cache_clear()
                 py_sid = resolve_session_id()
                 env = {k: v for k, v in os.environ.items() if k != "PLAYBOOK_SESSION_ID"}
-                r = _sub.run(["bash", "-c", f"source {gate_lib} && resolve_session_id"],
+                r = _sub.run(["bash", "-c", f"source '{gate_lib.as_posix()}' && resolve_session_id"],
                              capture_output=True, text=True, env=env, timeout=5)
                 bash_sid = r.stdout.strip()
             finally:
@@ -2476,11 +2657,12 @@ def main():
 
         # Summary
         total = passed + failed
-        print(f"\n{passed}/{total} checks passed", end="")
+        summary = f"\n{passed}/{total} checks passed"
         if failed:
-            print(f" ({failed} failed)")
-        else:
-            print()
+            summary += f" ({failed} failed)"
+        if warned:
+            summary += f" ({warned} warning{'s' if warned != 1 else ''})"
+        print(summary)
 
     elif cmd == "merge-doctor":
         if not cmd_args:
@@ -2614,7 +2796,7 @@ def main():
         if not chat_log.exists():
             print("Error: .agent/chat_log.md not found", file=sys.stderr)
             sys.exit(1)
-        text = chat_log.read_text(encoding="utf-8")
+        text = chat_log.read_text(encoding="utf-8", errors="replace")
         blocks = text.split("\n---\n")
         lines = []
         for block in blocks:

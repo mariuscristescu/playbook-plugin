@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import functools
+import json
+import math
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
-VERSION = "1.3.6"
+VERSION = "1.3.7"
 
 AGENT_PROCESS_NAMES = frozenset({"claude", "codex", "agy", "pi"})
 
@@ -22,6 +25,13 @@ def find_agent_root_pid() -> int | None:
     Python and bash both walk the same tree and converge on the same PID.
     Result is cached: process tree is stable for the lifetime of this process.
     """
+    # Windows/MSYS: this ancestor scan is non-functional and must be skipped.
+    # Git-Bash `ps` has no `-o` flag (breaks on the first call), and MSYS vs
+    # native-Windows PID namespaces are disjoint — there is no walkable path
+    # from a hook/CLI subprocess up to claude.exe. Return None and let
+    # resolve_session_id() lean on PLAYBOOK_SESSION_ID. POSIX is untouched.
+    if sys.platform == "win32" or os.name == "nt":
+        return None
     pid = os.getppid()
     last_agent_pid: int | None = None
     for _ in range(20):
@@ -63,10 +73,34 @@ def resolve_session_id() -> str:
     sid = os.environ.get("PLAYBOOK_SESSION_ID", "")
     if sid:
         return sid
+    # On Windows the ancestor scan is skipped (see find_agent_root_pid) and a
+    # PID fallback would split-brain: the Python CLI sees native-Windows PIDs
+    # while the bash hooks see MSYS PIDs — disjoint namespaces, so the CLI
+    # would write .agent/sessions/pid-A/ and the gate hook read pid-B/,
+    # silently disabling gate enforcement. Fall back to a constant shared
+    # verbatim with gate-echo-lib.sh resolve_session_id so both converge.
+    if sys.platform == "win32" or os.name == "nt":
+        _warn_windows_session_id_once()
+        return "pid-win-fallback"
     agent_pid = find_agent_root_pid()
     if agent_pid is not None:
         return f"pid-{agent_pid}"
     return f"pid-{os.getppid()}"
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_windows_session_id_once() -> None:
+    """Emit a one-time stderr warning that Windows session-id namespacing relies
+    on PLAYBOOK_SESSION_ID (the ancestor process-walk can't run there)."""
+    print(
+        "[playbook] PLAYBOOK_SESSION_ID is not set. On Windows the session id "
+        "falls back to the constant 'pid-win-fallback' shared by the Python CLI "
+        "and the bash hooks, so gate enforcement still works — but sessions are "
+        "not uniquely namespaced (fine for one session at a time, collides "
+        "across concurrent sessions). Set env.BASH_ENV in ~/.claude/settings.json "
+        "so PLAYBOOK_SESSION_ID propagates and each session gets its own id.",
+        file=sys.stderr,
+    )
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
@@ -96,6 +130,105 @@ def resolve_agent_dir(project_path: Path) -> Path:
     name = marker.read_text(encoding="utf-8").strip()
     _validate_username(name)
     return project_path / ".agent" / name
+
+
+# ── Per-install configuration (.agent/config.json) ──────────────────────────
+# Install-wide review knobs, read at the .agent/ ROOT (not the per-user subdir —
+# budget and review timeout are per-install, shared across users in a multi-user
+# repo). Precedence for every setting: CLI flag > env var > config.json >
+# built-in default. A missing file, malformed JSON, or an out-of-range value
+# never crashes the CLI — it falls back to the default (warning once).
+
+DEFAULT_JUDGE_BUDGET_USD = "2"
+DEFAULT_REVIEW_TIMEOUT_SECS = 300
+
+
+def load_config(project_path: Path) -> dict:
+    """Return the parsed .agent/config.json (install root), or {} if absent or
+    unparseable. Never raises — config is advisory, not load-bearing."""
+    cfg = project_path / ".agent" / "config.json"
+    if not cfg.exists():
+        return {}
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+@functools.lru_cache(maxsize=None)
+def _warn_bad_config_value_once(source: str, raw: str) -> None:
+    print(
+        f"[playbook] review setting from {source}={raw!r} is not valid — "
+        "using the built-in default instead.",
+        file=sys.stderr,
+    )
+
+
+def _first_valid(tiers, parse, default):
+    """Walk precedence tiers (highest first). `tiers` is an iterable of
+    (raw_value_or_None, source_label). Return `parse(str(raw))` for the first
+    tier whose value is present AND parses; a present-but-malformed value at any
+    tier warns once and falls through to the next. Return `default` if none
+    parse. Never raises — review config is advisory."""
+    for raw, source in tiers:
+        if raw is None:
+            continue
+        raw = str(raw)
+        try:
+            return parse(raw)
+        except (TypeError, ValueError):
+            _warn_bad_config_value_once(source, raw)
+    return default
+
+
+def _parse_budget(raw: str) -> str:
+    # Reject negative and non-finite (nan/inf) — a bogus --max-budget-usd nan
+    # would otherwise reach the claude judge. Keep the original string for argv.
+    value = float(raw)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(raw)
+    return raw
+
+
+def _parse_timeout(raw: str) -> int:
+    secs = int(raw)
+    if secs <= 0:
+        raise ValueError(raw)
+    return secs
+
+
+def resolve_judge_budget(project_path: Path, cli_value: str | None = None) -> str:
+    """Resolve the claude judge --max-budget-usd value (USD). Precedence:
+    cli_value (`--budget`) > PLAYBOOK_JUDGE_BUDGET_USD env > config.json
+    judge_budget_usd > "2". Returned as a str for direct argv use. A negative,
+    non-finite, or non-numeric value at ANY tier warns and falls through.
+    (claude-only; codex/agy/pi have no budget knob.)"""
+    return _first_valid(
+        (
+            (cli_value, "--budget"),
+            (os.environ.get("PLAYBOOK_JUDGE_BUDGET_USD"), "PLAYBOOK_JUDGE_BUDGET_USD"),
+            (load_config(project_path).get("judge_budget_usd"), "config.json judge_budget_usd"),
+        ),
+        _parse_budget,
+        DEFAULT_JUDGE_BUDGET_USD,
+    )
+
+
+def resolve_review_timeout(project_path: Path, cli_value: "str | int | None" = None) -> int:
+    """Resolve the review-agent subprocess timeout in seconds. Precedence:
+    cli_value (`--timeout`) > PLAYBOOK_REVIEW_TIMEOUT_SECS env > config.json
+    review_timeout_secs > 300. A non-integer or non-positive value at ANY tier
+    warns and falls through."""
+    return _first_valid(
+        (
+            (cli_value, "--timeout"),
+            (os.environ.get("PLAYBOOK_REVIEW_TIMEOUT_SECS"), "PLAYBOOK_REVIEW_TIMEOUT_SECS"),
+            (load_config(project_path).get("review_timeout_secs"), "config.json review_timeout_secs"),
+        ),
+        _parse_timeout,
+        DEFAULT_REVIEW_TIMEOUT_SECS,
+    )
 
 
 # Task type → pattern name in playbook skill

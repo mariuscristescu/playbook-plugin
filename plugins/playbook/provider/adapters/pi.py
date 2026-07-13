@@ -100,6 +100,7 @@ class PiAdapter(ProviderAdapter):
         *,
         web_search: bool,
         timeout_secs: int,
+        budget_usd: str = "2",
     ) -> str:
         import shutil
         # Prefer omlx (handles config-file setup via os.execvpe), fall back to
@@ -107,14 +108,28 @@ class PiAdapter(ProviderAdapter):
         if shutil.which("omlx") is None and shutil.which("pi") is None:
             return f"(error: neither omlx nor pi found on PATH)"
         inv = self.headless_argv(prompt, model, context=system_context)
+        # Windows caps the whole command line at 32,767 chars (WinError 206).
+        # pi takes prompt AND context as flag values on argv, and unlike agy
+        # (whose "no stdin" claim proved empirically wrong) a stdin path for pi
+        # is unverified — so fail fast with a clear error instead of a cryptic
+        # spawn failure when the payload can't fit.
+        if os.name == "nt":
+            payload = sum(len(a) + 1 for a in inv.argv)
+            if payload > 30_000:
+                return (f"(error: pi judge prompt+context is ~{payload} chars on argv; "
+                        "Windows caps the command line at 32,767 chars and pi reads its "
+                        "prompt from argv only — shrink the context or use another backend)")
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or "judge"
         from provider import sandbox as _sandbox
+        # pi takes its prompt as the `-p <prompt>` flag value (no stdin read),
+        # so context stays on argv here; encoding="utf-8" still guards the
+        # stdout decode against the Windows cp1252 locale default.
         result = _sandbox.run(
             "pi", inv.argv,
             project_root=self._project_root,
             env=env,
-            capture_output=True, text=True, timeout=timeout_secs,
+            capture_output=True, text=True, timeout=timeout_secs, encoding="utf-8",
         )
         return _sandbox.format_judge_output(result)
 

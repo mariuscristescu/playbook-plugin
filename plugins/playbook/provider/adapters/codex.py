@@ -39,11 +39,45 @@ from ..policy import Decision
 _AGENTS_MD_LENGTH_THRESHOLD = 2000
 _AGENTS_MD_PREFIXES = ("# AGENTS", "You are ", "# Playbook")
 
+# Accepted values for Codex's `model_reasoning_effort` config key.
+_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+
+
+def _split_reasoning_effort(model: str) -> tuple[str, Optional[str]]:
+    """Split a `model` or `model:effort` spec into (model, effort_or_None).
+
+    Judge specs like `codex:gpt-5.5:medium` (see resolve_judge_spec, which
+    only peels off the leading `provider:`) arrive here with the effort
+    suffix still attached to `model`. No colon means no effort override —
+    Codex then falls back to whatever `~/.codex/config.toml`'s
+    `model_reasoning_effort` says (often "high", which is why uncontrolled
+    panel runs get expensive). Raises ValueError on an unrecognized effort
+    keyword so a typo fails loud instead of being sent to `-m` as a bogus
+    model id.
+    """
+    if ":" not in model:
+        return model, None
+    model_id, _, effort = model.rpartition(":")
+    model_id = model_id.strip()
+    effort = effort.strip().lower()
+    if not model_id:
+        raise ValueError(f"empty model id in codex model spec {model!r}.")
+    if effort not in _REASONING_EFFORTS:
+        raise ValueError(
+            f"unknown reasoning effort {effort!r} in codex model spec {model!r}. "
+            f"Use one of: {', '.join(sorted(_REASONING_EFFORTS))}."
+        )
+    return model_id, effort
+
 
 class CodexAdapter(ProviderAdapter):
     """Provider adapter for Codex CLI (OpenAI)."""
 
-    _PANEL_VARIANTS = ["gpt-5.5", "gpt-5.3-codex"]
+    # gpt-5.3-codex removed 2026-07-02: the API rejects it on ChatGPT-account
+    # Codex ("model is not supported when using Codex with a ChatGPT account",
+    # 400) — it failed in every panel run. The gpt-codex alias in models.json
+    # remains for explicit opt-in by API-key users.
+    _PANEL_VARIANTS = ["gpt-5.5"]
 
     def __init__(self, session_id: str, project_root: Path) -> None:
         self._session_id = session_id
@@ -68,6 +102,7 @@ class CodexAdapter(ProviderAdapter):
         *,
         web_search: bool,
         timeout_secs: int,
+        budget_usd: str = "2",
     ) -> str:
         import shutil
         if not shutil.which(self.binary_name()):
@@ -83,7 +118,7 @@ class CodexAdapter(ProviderAdapter):
             project_root=self._project_root,
             env=env,
             input=inv.stdin, capture_output=True, text=True,
-            timeout=timeout_secs,
+            timeout=timeout_secs, encoding="utf-8",
         )
         return _sandbox.format_judge_output(result)
 
@@ -103,7 +138,10 @@ class CodexAdapter(ProviderAdapter):
         full_prompt = prompt if (bare or not context) else f"{context}\n\n---\n\n{prompt}"
         argv = ["exec", "--ephemeral", "--skip-git-repo-check", "-s", "workspace-write"]
         if model:
-            argv += ["-m", model]
+            model_id, effort = _split_reasoning_effort(model)
+            argv += ["-m", model_id]
+            if effort:
+                argv += ["-c", f"model_reasoning_effort={effort}"]
         argv.append("-")
         return Invocation(argv, stdin=full_prompt)
 
