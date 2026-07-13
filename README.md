@@ -101,7 +101,7 @@ Per-install review knobs live in `.agent/config.json` (created by `/playbook:ini
 ```
 
 - `judge_budget_usd` — spend cap for the **claude** judge (`--max-budget-usd`). Claude-only; codex/agy/pi have no budget knob.
-- `review_timeout_secs` — hard timeout for every review agent (plan / impl / panel). On expiry the whole process tree is terminated and the prior review log is left untouched.
+- `review_timeout_secs` — hard timeout for every review agent (plan / impl / panel). On expiry the whole process tree is terminated and the prior review log is left untouched. (Single-judge `plan-review` / `impl-review` previously had *no* timeout — they now default to 300s like the panel; raise it if your reviews legitimately run longer.)
 
 Precedence, highest first: **CLI flag** (`--budget`, `--timeout` on `plan-review` / `impl-review` / `panel-review`) → **env var** (`PLAYBOOK_JUDGE_BUDGET_USD`, `PLAYBOOK_REVIEW_TIMEOUT_SECS`) → **`.agent/config.json`** → built-in default. A missing file or malformed value falls back to the default (surfaced by `tasks doctor`, never fatal).
 

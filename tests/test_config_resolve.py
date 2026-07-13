@@ -11,6 +11,7 @@ Run: python3 tests/test_config_resolve.py   (or: python3 -m unittest ...)
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -94,6 +95,38 @@ class ConfigResolveTest(unittest.TestCase):
         self.assertEqual(core.load_config(self.project), {})
         self.assertEqual(core.resolve_review_timeout(self.project), 300)
 
+    # ── CLI flag tier (highest precedence) ──────────────────────────────────
+    def test_flag_beats_env_and_file(self):
+        self._write_config({"judge_budget_usd": 5, "review_timeout_secs": 120})
+        os.environ["PLAYBOOK_JUDGE_BUDGET_USD"] = "9"
+        os.environ["PLAYBOOK_REVIEW_TIMEOUT_SECS"] = "10"
+        self.assertEqual(core.resolve_judge_budget(self.project, "7"), "7")
+        self.assertEqual(core.resolve_review_timeout(self.project, "3"), 3)
+
+    def test_bad_flag_falls_through_to_env(self):
+        os.environ["PLAYBOOK_JUDGE_BUDGET_USD"] = "9"
+        os.environ["PLAYBOOK_REVIEW_TIMEOUT_SECS"] = "10"
+        self.assertEqual(core.resolve_judge_budget(self.project, "foo"), "9")
+        self.assertEqual(core.resolve_review_timeout(self.project, "foo"), 10)
+
+    def test_bad_flag_no_lower_tier_falls_to_default(self):
+        self.assertEqual(core.resolve_judge_budget(self.project, "foo"), "2")
+        self.assertEqual(core.resolve_review_timeout(self.project, "0"), 300)
+
+    # ── non-finite + env-tier malformed ─────────────────────────────────────
+    def test_nonfinite_budget_falls_back(self):
+        for bad in ("nan", "inf", "-inf"):
+            self._write_config({"judge_budget_usd": bad})
+            self.assertEqual(core.resolve_judge_budget(self.project), "2")
+
+    def test_env_negative_budget_falls_back(self):
+        os.environ["PLAYBOOK_JUDGE_BUDGET_USD"] = "-3"
+        self.assertEqual(core.resolve_judge_budget(self.project), "2")
+
+    def test_env_nonnumeric_timeout_falls_back(self):
+        os.environ["PLAYBOOK_REVIEW_TIMEOUT_SECS"] = "banana"
+        self.assertEqual(core.resolve_review_timeout(self.project), 300)
+
 
 class PanelBudgetThreadingTest(unittest.TestCase):
     """Regression guard for the panel budget path: run_headless_judge must put
@@ -140,6 +173,39 @@ class PanelBudgetThreadingTest(unittest.TestCase):
 
     def test_configured_budget_reaches_argv(self):
         self.assertEqual(self._capture_claude_argv(budget_usd="7"), "7")
+
+
+@unittest.skipIf(os.name == "nt", "POSIX process-group termination path")
+class RunWithTimeoutTest(unittest.TestCase):
+    """Regression guard for the B8 fix: sandbox.run(timeout=) must terminate the
+    whole tree on expiry — a naive subprocess.run(timeout=) killed only the
+    direct child while grandchildren kept the pipe open and hung communicate()."""
+
+    def test_timeout_kills_tree_and_returns_fast(self):
+        import time
+        from provider import sandbox
+
+        d = tempfile.mkdtemp()
+        pidfile = Path(d) / "grandchild.pid"
+        # outer sh (process-group leader via start_new_session) spawns a
+        # grandchild that records its pid then sleeps; both outlast the 1s
+        # timeout, so a lone direct-child kill would hang on the held pipe.
+        wrapped = ["sh", "-c",
+                   f"(sh -c 'echo $$ > {pidfile}; exec sleep 60') & sleep 60"]
+        t0 = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            sandbox._run_with_timeout(
+                wrapped, Path(d), dict(os.environ),
+                capture_output=True, check=False, kwargs={"timeout": 1, "text": True},
+            )
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 15, f"timeout path took {elapsed:.1f}s — did it hang?")
+
+        # The grandchild must be dead (tree killed, not just the leader).
+        time.sleep(0.5)
+        pid = int(pidfile.read_text().strip())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 if __name__ == "__main__":

@@ -1098,7 +1098,7 @@ def main():
         # Parse flags
         review_mode = "plan"
         web_search = False
-        timeout_secs = None  # --timeout override; else resolved from config below
+        timeout_flag = None  # --timeout override (raw str); resolved from config below
         budget_flag = None   # --budget override (claude judges only)
         extra_prompt = ""
         no_mind_map = False
@@ -1117,7 +1117,7 @@ def main():
                 web_search = True
                 i += 1
             elif cmd_args[i] == "--timeout" and i + 1 < len(cmd_args):
-                timeout_secs = int(cmd_args[i + 1])
+                timeout_flag = cmd_args[i + 1]
                 i += 2
             elif cmd_args[i] == "--budget" and i + 1 < len(cmd_args):
                 budget_flag = cmd_args[i + 1]
@@ -1152,9 +1152,8 @@ def main():
         project_path = find_project_root()
         # Review knobs — precedence: --flag > env var > .agent/config.json > default.
         from tasks.core import resolve_judge_budget, resolve_review_timeout
-        if timeout_secs is None:
-            timeout_secs = resolve_review_timeout(project_path)
-        panel_budget = budget_flag if budget_flag else resolve_judge_budget(project_path)
+        timeout_secs = resolve_review_timeout(project_path, timeout_flag)
+        panel_budget = resolve_judge_budget(project_path, budget_flag)
 
         # Resolve task file if task number given
         task_file = None
@@ -1418,8 +1417,8 @@ def main():
         # Review knobs — precedence: --flag > env var > .agent/config.json >
         # built-in default (resolvers live in tasks.core).
         from tasks.core import resolve_judge_budget, resolve_review_timeout
-        review_timeout = int(timeout_flag) if timeout_flag else resolve_review_timeout(project_path)
-        review_budget = budget_flag if budget_flag else resolve_judge_budget(project_path)
+        review_timeout = resolve_review_timeout(project_path, timeout_flag)
+        review_budget = resolve_judge_budget(project_path, budget_flag)
         tasks_dir = resolve_agent_dir(project_path) / "tasks"
         matches = list(tasks_dir.glob(f"{task_num}-*/task.md"))
         if not matches:
@@ -1632,6 +1631,19 @@ def main():
             ]
             if model:
                 pi_args += ["--model", model]
+
+            # Windows caps the whole command line at 32,767 chars (WinError 206);
+            # pi reads its prompt AND context from argv only (no verified stdin
+            # path), so fail fast with a clear message rather than a cryptic
+            # spawn failure — mirrors the guard in provider/adapters/pi.py.
+            if os.name == "nt":
+                payload = sum(len(a) + 1 for a in pi_args)
+                if payload > 30_000:
+                    print(f"Error: pi judge prompt+context is ~{payload} chars on argv; "
+                          "Windows caps the command line at 32,767 chars and pi reads its "
+                          "prompt from argv only — shrink the context or use another backend.",
+                          file=sys.stderr)
+                    sys.exit(1)
 
             pi_env = os.environ.copy()
             pi_env["PLAYBOOK_SESSION_ID"] = "judge"

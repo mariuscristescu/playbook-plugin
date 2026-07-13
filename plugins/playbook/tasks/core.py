@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import os
 import re
 import subprocess
@@ -164,46 +165,70 @@ def _warn_bad_config_value_once(source: str, raw: str) -> None:
     )
 
 
-def resolve_judge_budget(project_path: Path) -> str:
-    """Resolve the claude judge --max-budget-usd value (USD).
-    Precedence: PLAYBOOK_JUDGE_BUDGET_USD env > config.json judge_budget_usd >
-    "2". Returned as a str for direct argv use. Non-numeric / negative → default.
+def _first_valid(tiers, parse, default):
+    """Walk precedence tiers (highest first). `tiers` is an iterable of
+    (raw_value_or_None, source_label). Return `parse(str(raw))` for the first
+    tier whose value is present AND parses; a present-but-malformed value at any
+    tier warns once and falls through to the next. Return `default` if none
+    parse. Never raises — review config is advisory."""
+    for raw, source in tiers:
+        if raw is None:
+            continue
+        raw = str(raw)
+        try:
+            return parse(raw)
+        except (TypeError, ValueError):
+            _warn_bad_config_value_once(source, raw)
+    return default
+
+
+def _parse_budget(raw: str) -> str:
+    # Reject negative and non-finite (nan/inf) — a bogus --max-budget-usd nan
+    # would otherwise reach the claude judge. Keep the original string for argv.
+    value = float(raw)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(raw)
+    return raw
+
+
+def _parse_timeout(raw: str) -> int:
+    secs = int(raw)
+    if secs <= 0:
+        raise ValueError(raw)
+    return secs
+
+
+def resolve_judge_budget(project_path: Path, cli_value: str | None = None) -> str:
+    """Resolve the claude judge --max-budget-usd value (USD). Precedence:
+    cli_value (`--budget`) > PLAYBOOK_JUDGE_BUDGET_USD env > config.json
+    judge_budget_usd > "2". Returned as a str for direct argv use. A negative,
+    non-finite, or non-numeric value at ANY tier warns and falls through.
     (claude-only; codex/agy/pi have no budget knob.)"""
-    raw = os.environ.get("PLAYBOOK_JUDGE_BUDGET_USD")
-    source = "PLAYBOOK_JUDGE_BUDGET_USD"
-    if raw is None:
-        val = load_config(project_path).get("judge_budget_usd")
-        if val is None:
-            return DEFAULT_JUDGE_BUDGET_USD
-        raw, source = str(val), "config.json judge_budget_usd"
-    try:
-        if float(raw) < 0:
-            raise ValueError
-        return raw
-    except (TypeError, ValueError):
-        _warn_bad_config_value_once(source, raw)
-        return DEFAULT_JUDGE_BUDGET_USD
+    return _first_valid(
+        (
+            (cli_value, "--budget"),
+            (os.environ.get("PLAYBOOK_JUDGE_BUDGET_USD"), "PLAYBOOK_JUDGE_BUDGET_USD"),
+            (load_config(project_path).get("judge_budget_usd"), "config.json judge_budget_usd"),
+        ),
+        _parse_budget,
+        DEFAULT_JUDGE_BUDGET_USD,
+    )
 
 
-def resolve_review_timeout(project_path: Path) -> int:
-    """Resolve the review-agent subprocess timeout in seconds.
-    Precedence: PLAYBOOK_REVIEW_TIMEOUT_SECS env > config.json
-    review_timeout_secs > 300. Non-numeric / non-positive → default."""
-    raw = os.environ.get("PLAYBOOK_REVIEW_TIMEOUT_SECS")
-    source = "PLAYBOOK_REVIEW_TIMEOUT_SECS"
-    if raw is None:
-        val = load_config(project_path).get("review_timeout_secs")
-        if val is None:
-            return DEFAULT_REVIEW_TIMEOUT_SECS
-        raw, source = str(val), "config.json review_timeout_secs"
-    try:
-        secs = int(raw)
-        if secs <= 0:
-            raise ValueError
-        return secs
-    except (TypeError, ValueError):
-        _warn_bad_config_value_once(source, raw)
-        return DEFAULT_REVIEW_TIMEOUT_SECS
+def resolve_review_timeout(project_path: Path, cli_value: "str | int | None" = None) -> int:
+    """Resolve the review-agent subprocess timeout in seconds. Precedence:
+    cli_value (`--timeout`) > PLAYBOOK_REVIEW_TIMEOUT_SECS env > config.json
+    review_timeout_secs > 300. A non-integer or non-positive value at ANY tier
+    warns and falls through."""
+    return _first_valid(
+        (
+            (cli_value, "--timeout"),
+            (os.environ.get("PLAYBOOK_REVIEW_TIMEOUT_SECS"), "PLAYBOOK_REVIEW_TIMEOUT_SECS"),
+            (load_config(project_path).get("review_timeout_secs"), "config.json review_timeout_secs"),
+        ),
+        _parse_timeout,
+        DEFAULT_REVIEW_TIMEOUT_SECS,
+    )
 
 
 # Task type → pattern name in playbook skill
