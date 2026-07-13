@@ -66,7 +66,7 @@ find_agent_root_pid() {
         comm=$(echo "$info" | awk '{$1=""; sub(/^ +/, ""); print}')
         comm="${comm##*/}"  # parameter expansion: strip path; safe for "-zsh" (basename would error)
         case "$comm" in
-            claude|codex|agy|pi) last_agent=$pid ;;
+            claude|codex|agy|grok|pi) last_agent=$pid ;;
         esac
         [ "$ppid" = "$pid" ] && break
         pid=$ppid
@@ -406,7 +406,7 @@ WRAPPER
 
 # Known playbook-managed wrapper names. Kept in sync with the create_wrapper
 # calls in `init` and `session-start-hook`.
-PLAYBOOK_WRAPPER_NAMES="tasks sandbox monitor playbook-codex playbook-agy playbook-pi"
+PLAYBOOK_WRAPPER_NAMES="tasks sandbox monitor playbook-codex playbook-agy playbook-grok playbook-pi"
 
 # heal_empty_wrappers PROJECT_DIR
 # Repair any playbook wrapper that a pre-fix kill left 0 bytes. Cheap enough to

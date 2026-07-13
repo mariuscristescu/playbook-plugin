@@ -99,6 +99,15 @@ fi
 
 # Read stdin (PostToolUse JSON)
 INPUT=$(cat)
+
+# Normalize provider payload dialects (grok camelCase + renamed tools →
+# claude snake_case; identity for claude payloads; fail-open on any error).
+# One shot — every parse site below reads the normalized $INPUT (task 014).
+NORMALIZED=$(printf '%s' "$INPUT" | python3 "$HOOK_DIR/hook-payload-normalize.py" 2>/dev/null || true)
+if [ -n "$NORMALIZED" ]; then
+    INPUT="$NORMALIZED"
+fi
+
 SESSION_ID="$(resolve_session_id)"
 TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_name',''))" 2>/dev/null || echo "")
 

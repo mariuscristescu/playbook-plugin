@@ -22,7 +22,7 @@ from typing import Iterable
 
 
 # Priority order for default_agent() — first available wins.
-_AGENT_ORDER: tuple[str, ...] = ("claude", "codex", "agy", "pi")
+_AGENT_ORDER: tuple[str, ...] = ("claude", "codex", "agy", "grok", "pi")
 
 # Binary names per agent. Pi may resolve via the `omlx` launcher when `pi` itself
 # is absent (omlx launches pi via os.execvpe, inheriting our sandbox).
@@ -31,6 +31,7 @@ _AGENT_BINARIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex",),
     "agy": ("agy",),
     "pi": ("pi", "omlx"),
+    "grok": ("grok",),
 }
 
 # Per-agent bypass-flag injection. These are appended to argv at the top level
@@ -43,16 +44,20 @@ _BYPASS_FLAGS: dict[str, list[str]] = {
     "agy": ["--dangerously-skip-permissions"],
     "codex": ["--dangerously-bypass-approvals-and-sandbox"],
     "pi": [],
+    "grok": ["--always-approve"],
 }
 
 # Home-relative directories that must be writable across all agents.
 # Union of: claude state, codex state, gemini/agy transcripts, omlx server data,
-# pi config, generic tool caches, macOS Library.
+# pi config, grok state (auth/sessions/leader socket — grok dies at startup
+# with FS_PERMISSION_DENIED if ~/.grok is read-only), generic tool caches,
+# macOS Library.
 _HOME_RW_SUBPATHS: tuple[str, ...] = (
     ".codex",
     ".gemini",
     ".omlx",
     ".pi",
+    ".grok",
     ".cache",
     ".local",
     "Library",
@@ -149,6 +154,8 @@ def resolve_model(model: str) -> tuple[str, str | None, tuple[str, ...]]:
         return ("codex", model, ())
     if model.startswith("gemini-"):
         return ("agy", None, ())  # agy has no -m; drop the model arg
+    if model.startswith("grok-"):
+        return ("grok", model, ())
     if "/" in model:
         return ("pi", model, ("--provider", "openrouter"))
     if model.startswith("qwen"):
@@ -171,6 +178,7 @@ _PROVIDER_SYNONYMS: dict[str, str] = {
     "codex": "codex",
     "agy": "agy", "antigravity": "agy", "gemini": "agy",
     "pi": "pi", "qwen": "pi",
+    "grok": "grok",
 }
 
 

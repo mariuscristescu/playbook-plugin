@@ -186,8 +186,9 @@ class CheckPinsTest(unittest.TestCase):
             mock.patch.object(mc, "load_codex_cache", return_value=cache),
             mock.patch.object(mc, "installed_cli_version", return_value="0.144.3"),
             mock.patch.object(mc, "list_agy_models", return_value=["Gemini 3.5 Flash (High)"]),
+            mock.patch.object(mc, "list_grok_models", return_value=["grok-build"]),
             mock.patch.object(mc, "_adapter_classes", return_value={
-                "claude": avail, "codex": avail, "agy": avail, "pi": avail}),
+                "claude": avail, "codex": avail, "agy": avail, "pi": avail, "grok": avail}),
             mock.patch.object(mc, "probe_claude_model",
                               side_effect=lambda m, timeout=0: (mc.OK, "responds")
                               if m == "claude-fable-5" else (mc.GONE, "claude rejects this model id")),
