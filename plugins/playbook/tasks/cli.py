@@ -2047,10 +2047,15 @@ def main():
             else:
                 print(f"\nReview failed (exit {result.returncode}); no output to save", flush=True)
         else:
-            if backend == "claude":
-                judge_log.write_text(result.stdout or "", encoding="utf-8")
-            # codex: -o already writes the file; write stdout as fallback
-            elif not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
+            # Only codex writes its own log file (via `-o`); for it, stdout is a
+            # fallback used only when that file is missing/empty. Every other
+            # backend (claude/antigravity/grok/pi) MUST have stdout written here
+            # — and OVERWRITTEN on each successful re-review, else a second run
+            # prints "Saved" while silently keeping the stale log (task 014 I4).
+            if backend == "codex":
+                if not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
+                    judge_log.write_text(result.stdout or "", encoding="utf-8")
+            else:
                 judge_log.write_text(result.stdout or "", encoding="utf-8")
             print(f"\nSaved: {judge_log.relative_to(project_path)}", flush=True)
 

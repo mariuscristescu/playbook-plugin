@@ -217,9 +217,13 @@ class GrokAdapter(ProviderAdapter):
         KNOWN LIMITATION (verified live, task 014): grok splits the hook
         manifest's `command` string on whitespace, so a hook whose resolved
         path contains a SPACE never launches → gate enforcement fail-opens
-        SILENTLY. Normal installs (~/.claude/plugins/cache/.../playbook/<ver>)
-        are space-free and fine; a project checked out under a spaced path
-        (e.g. macOS "Mobile Documents" iCloud dirs) loses grok enforcement.
+        SILENTLY. The path that matters is the RESOLVED HOOK-SCRIPT path
+        (`${CLAUDE_PLUGIN_ROOT}/scripts/...`), i.e. where this plugin is
+        installed — NOT the project dir. Normal installs
+        (~/.claude/plugins/cache/.../playbook/<ver>) are space-free and fine;
+        a plugin under a spaced path (e.g. this dogfooding checkout in a macOS
+        "Mobile Documents" iCloud dir) loses grok enforcement even for a
+        space-free project.
         """
         settings = project_root / ".claude" / "settings.json"
         if not settings.exists():
@@ -228,10 +232,15 @@ class GrokAdapter(ProviderAdapter):
         print("  grok hooks   auto-discovered from .claude/settings.json (Claude compat)")
         print("               one-time step: run /hooks-trust inside a grok session in this")
         print("               project, or project hooks are silently skipped")
-        if " " in str(project_root):
-            print("               WARNING: project path contains a space — grok splits hook")
+        # Check the hook-SCRIPT path (this module lives inside the plugin that
+        # ships the hooks), not project_root — enforcement depends on the
+        # command grok execs, which resolves to the plugin's scripts/ dir.
+        plugin_path = str(Path(__file__).resolve())
+        if " " in plugin_path:
+            print("               WARNING: plugin path contains a space — grok splits hook")
             print("               command paths on whitespace, so gate enforcement will")
-            print("               fail-open here. Move the project to a space-free path.")
+            print(f"               fail-open here ({plugin_path.split(' ')[0]}...). Install the")
+            print("               plugin under a space-free path for grok enforcement.")
 
     def uninstall_hooks(self, project_root: Path) -> None:
         """Nothing to remove — grok reads the shared .claude/settings.json."""

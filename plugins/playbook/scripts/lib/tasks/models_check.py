@@ -333,7 +333,11 @@ def probe_grok_model(model: str, timeout: int = PROBE_TIMEOUT_SECS) -> tuple[str
     answers one tiny turn. Runs from a throwaway temp cwd so the probe
     session can't attach to a playbook project.
     """
-    argv = ["grok", "-p", "reply with exactly: ok", "-m", model, "--max-turns", "1"]
+    # --disable-web-search: grok's web tools are default-ON; without this a
+    # probe turn can wander into a web search, blow PROBE_TIMEOUT_SECS, and
+    # misclassify a live pin as UNKNOWN (probes gate the hard-stop path).
+    argv = ["grok", "-p", "reply with exactly: ok", "-m", model,
+            "--max-turns", "1", "--disable-web-search"]
     with tempfile.TemporaryDirectory(prefix="playbook-models-probe-") as td:
         try:
             result = subprocess.run(

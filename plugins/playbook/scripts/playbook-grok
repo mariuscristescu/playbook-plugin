@@ -39,6 +39,8 @@ PROJECT_ROOT="$(find_project_root)"
 SESSION_ID="pid-$$"
 export PLAYBOOK_SESSION_ID="$SESSION_ID"
 export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+# So chat-log-hook tags this session's messages `grok`, not the default `claude`.
+export PLAYBOOK_PROVIDER="grok"
 
 # Provision session directory so state files have a home
 if [ -n "$PROJECT_ROOT" ]; then

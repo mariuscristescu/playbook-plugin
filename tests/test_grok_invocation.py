@@ -101,10 +101,29 @@ class GrokPayloadNormalizerTest(unittest.TestCase):
                              capture_output=True, text=True).stdout
         return out
 
-    def test_claude_payload_identity(self):
-        claude = {"hook_event_name": "PreToolUse", "session_id": "c1", "tool_name": "Edit",
-                  "tool_input": {"file_path": "/x/y.py", "old_string": "a", "new_string": "b"}}
-        self.assertEqual(json.loads(self.norm(claude)), claude)
+    def test_claude_payload_byte_identical(self):
+        # A native (snake_case) claude payload must round-trip BYTE-for-byte —
+        # no re-serialization, so downstream grep fallbacks keep matching.
+        raw = '{"hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": {"file_path": "/x/y.py"}}'
+        self.assertEqual(self.norm(raw), raw)
+
+    def test_claude_prompt_with_user_query_tags_untouched(self):
+        # A claude user whose message IS <user_query>...</user_query> must not
+        # be rewritten (no dialect marker → passthrough).
+        raw = '{"prompt": "<user_query>\\nhi\\n</user_query>"}'
+        self.assertEqual(self.norm(raw), raw)
+
+    def test_claude_tool_named_shell_not_remapped(self):
+        # Hypothetical claude payload with tool_name "Shell" stays "Shell"
+        # (no camelCase marker → no vocabulary remap).
+        raw = '{"tool_name": "Shell", "tool_input": {"command": "ls"}}'
+        self.assertEqual(self.norm(raw), raw)
+
+    def test_grok_output_is_compact_json(self):
+        # Transformed grok output uses compact separators (no space after :,)
+        out = self.norm({"toolName": "Shell", "toolInput": {"command": "ls"}})
+        self.assertNotIn('": ', out)
+        self.assertNotIn('", "', out)
 
     def test_grok_strreplace_becomes_edit(self):
         out = json.loads(self.norm({

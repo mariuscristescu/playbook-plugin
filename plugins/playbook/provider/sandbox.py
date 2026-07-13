@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Iterable
 
 
-# Priority order for default_agent() — first available wins.
-_AGENT_ORDER: tuple[str, ...] = ("claude", "codex", "agy", "grok", "pi")
+# Priority order for default_agent() — first available wins. New providers are
+# APPENDED (grok after pi) so adding one never changes the existing default for
+# installs that already have an earlier provider (task 014 I7).
+_AGENT_ORDER: tuple[str, ...] = ("claude", "codex", "agy", "pi", "grok")
 
 # Binary names per agent. Pi may resolve via the `omlx` launcher when `pi` itself
 # is absent (omlx launches pi via os.execvpe, inheriting our sandbox).
@@ -298,6 +300,8 @@ _AVAILABILITY_SIGNATURES = (
     "model is not supported",
     "requires a newer version of Codex",
     "There's an issue with the selected model",
+    "Couldn't set model",  # grok bad-model (task 014) — pairs with the line below
+    'Invalid params: "unknown model id"',
 )
 
 

@@ -20,9 +20,15 @@ normalized form — one normalizer instead of N per-site fallbacks
 (task 014 plan-panel F-D).
 
 Safety contract:
-  - Claude payloads pass through unchanged: existing snake_case keys
-    ALWAYS win over camelCase aliases, and vocabulary mapping only fires
-    on names Claude never emits (StrReplace/Shell).
+  - Claude payloads pass through BYTE-IDENTICALLY: a payload with no
+    camelCase dialect marker (`hookEventName`/`toolName`/`toolInput`/
+    `sessionId`) is echoed back exactly as received — never re-parsed,
+    re-serialized, tool-renamed, or prompt-unwrapped. This makes the
+    "claude unchanged" guarantee literal, not merely semantic (task 014
+    impl-panel I2: unconditional transforms could rewrite a claude prompt
+    that itself contained `<user_query>` tags, and re-serialization with
+    json.dumps' default spaced separators broke chat-log-hook's jq-less
+    `"prompt":"..."` grep fallback).
   - Any error (non-JSON stdin, unexpected shape) → the raw input is
     echoed back verbatim, so the hooks' own per-site `|| echo ""`
     fallbacks apply exactly as before this shim existed.
@@ -50,6 +56,11 @@ _TOP_KEYS = {
     "transcriptPath": "transcript_path",
 }
 
+# Presence of ANY of these top-level camelCase keys marks a grok/Cursor-dialect
+# payload. Absent → treat as a native claude payload and pass through untouched
+# (the byte-identity contract). Claude never emits camelCase top-level keys.
+_DIALECT_MARKERS = ("hookEventName", "toolName", "toolInput", "sessionId")
+
 # grok wraps the UserPromptSubmit prompt; unwrap only when the wrapper spans
 # the whole value (a Claude prompt merely MENTIONING the tag is untouched).
 _USER_QUERY_RE = re.compile(
@@ -57,8 +68,17 @@ _USER_QUERY_RE = re.compile(
 )
 
 
+def is_foreign_dialect(payload) -> bool:
+    """True iff the payload carries a camelCase dialect marker (grok/Cursor).
+
+    A native claude payload has none of these, so normalize() leaves it
+    entirely alone — the transforms below only ever run on foreign dialects.
+    """
+    return isinstance(payload, dict) and any(k in payload for k in _DIALECT_MARKERS)
+
+
 def normalize(payload):
-    if not isinstance(payload, dict):
+    if not is_foreign_dialect(payload):
         return payload
     out = dict(payload)
     for camel, snake in _TOP_KEYS.items():
@@ -85,9 +105,17 @@ def normalize(payload):
 def main():
     raw = sys.stdin.read()
     try:
-        sys.stdout.write(json.dumps(normalize(json.loads(raw))))
+        payload = json.loads(raw)
     except Exception:
-        sys.stdout.write(raw)
+        sys.stdout.write(raw)  # non-JSON → verbatim (hooks' own fallbacks apply)
+        return
+    if not is_foreign_dialect(payload):
+        sys.stdout.write(raw)  # native claude → BYTE-IDENTICAL passthrough
+        return
+    # Foreign dialect: emit the normalized payload. Compact separators keep the
+    # output shape claude-native (no space after ':'/',') so downstream grep
+    # fallbacks that expect the compact form still match.
+    sys.stdout.write(json.dumps(normalize(payload), separators=(",", ":")))
 
 
 if __name__ == "__main__":
