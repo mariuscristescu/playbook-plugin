@@ -329,9 +329,10 @@ def make_default_runner(project_path: Path, *, timeout_secs: int = 300):
     from provider.adapters.codex import CodexAdapter
     from provider.adapters.antigravity import AntigravityAdapter
     from provider.adapters.pi import PiAdapter
+    from provider.adapters.grok import GrokAdapter
 
     adapters = {"claude": ClaudeAdapter, "codex": CodexAdapter,
-                "agy": AntigravityAdapter, "pi": PiAdapter}
+                "agy": AntigravityAdapter, "pi": PiAdapter, "grok": GrokAdapter}
     cfg = load_judge_config()
     provider, variant = resolve_judge_spec(cfg.get("default_judge") or "codex")
     adapter_cls = adapters.get(provider, CodexAdapter)

@@ -1,0 +1,50 @@
+#!/bin/bash
+# bin/playbook-grok — launch Grok Build CLI with a unique per-session Playbook session ID.
+#
+# Usage: playbook-grok [grok-args...]
+#
+# Generates PLAYBOOK_SESSION_ID, provisions the session directory, then execs
+# grok so the agent (and every hook process it spawns) inherits the env.
+#
+# Grok discovers the playbook hooks natively — it reads the project's
+# .claude/settings.json and installed Claude Code plugins through its
+# Claude-compat layer (verified live, grok 0.2.99 / task 014). The hook
+# payload dialect is translated by scripts/hook-payload-normalize.py.
+# ONE-TIME STEP per project: run /hooks-trust inside a grok session here,
+# or project hooks are silently skipped (folder-trust gate,
+# ~/.grok/trusted_folders.toml). Grok's Stop hook cannot block, so
+# anti-walk-away enforcement is soft (same boundary as pi).
+#
+# See provider/adapters/grok.py launch_interactive() for the programmatic
+# equivalent (assumes env pre-set).
+
+set -e
+
+# Find project root (directory containing .agent/tasks/)
+find_project_root() {
+    local dir="$PWD"
+    while [ "$dir" != "/" ]; do
+        if [ -d "$dir/.agent/tasks" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    echo ""
+}
+
+PROJECT_ROOT="$(find_project_root)"
+
+# PID-based session ID: pid-$$ (this wrapper's PID = parent of grok process)
+SESSION_ID="pid-$$"
+export PLAYBOOK_SESSION_ID="$SESSION_ID"
+export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+# So chat-log-hook tags this session's messages `grok`, not the default `claude`.
+export PLAYBOOK_PROVIDER="grok"
+
+# Provision session directory so state files have a home
+if [ -n "$PROJECT_ROOT" ]; then
+    mkdir -p "$PROJECT_ROOT/.agent/sessions/$SESSION_ID"
+fi
+
+exec grok "$@"

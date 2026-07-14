@@ -45,6 +45,7 @@ if [ -n "$PROJECT_DIR" ]; then
     # on next session start, not just on fresh init.
     create_wrapper "$PROJECT_DIR" playbook-codex
     create_wrapper "$PROJECT_DIR" playbook-agy
+    create_wrapper "$PROJECT_DIR" playbook-grok
     create_wrapper "$PROJECT_DIR" playbook-pi
 
     # Provision session directory for this session

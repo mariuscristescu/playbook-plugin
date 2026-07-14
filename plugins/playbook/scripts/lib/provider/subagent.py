@@ -33,12 +33,14 @@ def _adapter_class(agent: str):
     from .adapters.claude import ClaudeAdapter
     from .adapters.codex import CodexAdapter
     from .adapters.antigravity import AntigravityAdapter
+    from .adapters.grok import GrokAdapter
     from .adapters.pi import PiAdapter
     table = {
         "claude": ClaudeAdapter,
         "codex": CodexAdapter,
         "agy": AntigravityAdapter,
         "pi": PiAdapter,
+        "grok": GrokAdapter,
     }
     try:
         return table[agent]
@@ -49,7 +51,7 @@ def _adapter_class(agent: str):
 @dataclass
 class SubagentSpec:
     """A provider-agnostic description of one headless subagent run."""
-    agent: str                                  # claude | codex | agy | pi
+    agent: str                                  # claude | codex | agy | grok | pi
     model: Optional[str] = None
     prompt: str = ""
     context: str = ""                           # system context; ignored when bare

@@ -24,6 +24,11 @@ Per-provider discovery surfaces (probed live, 2026-07-13):
 - agy: `agy models` lists display names, but `--model` is inert in --print
   mode (silently runs the UI-selected model), so pins are unverifiable and
   agy can never raise a model-unavailable error.
+- grok: `grok models` lists the ACCOUNT'S entitled model ids (login-aware —
+  unlike the codex cache this list IS the entitlements), so listing alone
+  earns OK. A bad `-m` fails fast pre-turn: exit 1 + stderr `Couldn't set
+  model '<x>': Invalid params: "unknown model id"` (verified live, 0.2.99),
+  which makes grok pins probe-confirmable for the hard-stop path.
 - pi: no discovery surface known; adapter availability check only.
 
 Verdicts:
@@ -77,6 +82,13 @@ OTHER = "OTHER"
 _CLAUDE_MODEL_GONE = "There's an issue with the selected model"
 _BUDGET_EXCEEDED = "Error: Exceeded USD budget"
 
+# Live-captured grok bad-model signature (task 014): exit 1 + stderr
+# `Couldn't set model 'x': Invalid params: "unknown model id". Run 'grok
+# models' to see available models.` Match both fragments — the quoted
+# "unknown model id" alone is a phrase a review could plausibly quote.
+_GROK_MODEL_GONE = "Couldn't set model"
+_GROK_MODEL_GONE_2 = 'Invalid params: "unknown model id"'
+
 
 def judge_failed(text: str) -> bool:
     """True when a judge's output string is a failure, not a review.
@@ -118,6 +130,8 @@ def classify_failure(output_text: str) -> str:
         return MODEL_UNAVAILABLE
     if _CLAUDE_MODEL_GONE in t:
         return MODEL_UNAVAILABLE
+    if _GROK_MODEL_GONE in t and _GROK_MODEL_GONE_2 in t:
+        return MODEL_UNAVAILABLE
     return OTHER
 
 
@@ -125,9 +139,11 @@ def _adapter_classes() -> dict:
     from provider.adapters.antigravity import AntigravityAdapter
     from provider.adapters.claude import ClaudeAdapter
     from provider.adapters.codex import CodexAdapter
+    from provider.adapters.grok import GrokAdapter
     from provider.adapters.pi import PiAdapter
     return {"claude": ClaudeAdapter, "codex": CodexAdapter,
-            "agy": AntigravityAdapter, "pi": PiAdapter}
+            "agy": AntigravityAdapter, "pi": PiAdapter,
+            "grok": GrokAdapter}
 
 
 # ── codex ────────────────────────────────────────────────────────────────────
@@ -261,6 +277,87 @@ def list_agy_models() -> Optional[list[str]]:
     return parse_agy_models(result.stdout or "")
 
 
+# ── grok ─────────────────────────────────────────────────────────────────────
+
+def parse_grok_models(text: str) -> list[str]:
+    """`grok models` stdout → model-id list.
+
+    Live format (grok 0.2.99):
+        You are logged in with grok.com.
+
+        Default model: grok-composer-2.5-fast
+
+        Available models:
+          * grok-composer-2.5-fast (default)
+          - grok-build
+
+    Model ids are the first token after a `*`/`-` bullet; the `(default)`
+    decoration and prose lines (login banner, headers) are dropped.
+    """
+    models: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith(("* ", "- ")):
+            model = s[2:].split()[0].strip()
+            if model:
+                models.append(model)
+    return models
+
+
+def list_grok_models() -> Optional[list[str]]:
+    """Run `grok models`; None when the CLI is missing or errors.
+
+    Unlike the codex models cache (a catalog), this list is login-aware —
+    what it lists IS what the account can run, so a listed pin earns OK
+    without a live turn.
+    """
+    if not shutil.which("grok"):
+        return None
+    try:
+        result = subprocess.run(
+            ["grok", "models"], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=60, encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_grok_models(result.stdout or "")
+
+
+def probe_grok_model(model: str, timeout: int = PROBE_TIMEOUT_SECS) -> tuple[str, str]:
+    """Live-probe one grok model id → (verdict, detail).
+
+    A bad `-m` fails BEFORE any turn runs (exit 1 + the stderr signature —
+    verified live on 0.2.99), so a GONE probe costs nothing; a good model
+    answers one tiny turn. Runs from a throwaway temp cwd so the probe
+    session can't attach to a playbook project.
+    """
+    # --disable-web-search: grok's web tools are default-ON; without this a
+    # probe turn can wander into a web search, blow PROBE_TIMEOUT_SECS, and
+    # misclassify a live pin as UNKNOWN (probes gate the hard-stop path).
+    argv = ["grok", "-p", "reply with exactly: ok", "-m", model,
+            "--max-turns", "1", "--disable-web-search"]
+    with tempfile.TemporaryDirectory(prefix="playbook-models-probe-") as td:
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=td, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=timeout, encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            return UNKNOWN, f"probe timed out after {timeout}s"
+        except OSError as e:
+            return UNKNOWN, f"probe failed to launch: {e}"
+    if result.returncode == 0:
+        return OK, "responds"
+    combined = (result.stdout or "") + (result.stderr or "")
+    if _GROK_MODEL_GONE in combined and _GROK_MODEL_GONE_2 in combined:
+        return GONE, "grok rejects this model id for this account"
+    first = combined.strip().splitlines()[0][:160] if combined.strip() else f"exit {result.returncode}"
+    return UNKNOWN, f"probe failed for another reason: {first}"
+
+
 # ── claude ───────────────────────────────────────────────────────────────────
 
 def probe_claude_model(model: str, timeout: int = PROBE_TIMEOUT_SECS) -> tuple[str, str]:
@@ -355,6 +452,9 @@ def check_pins(project_root: Path, probe: bool = True,
     codex_cache = load_codex_cache()
     codex_version = installed_cli_version("codex")
     agy_models = list_agy_models() if adapters["agy"].is_available() else None
+    _grok_adapter = adapters.get("grok")
+    grok_models = (list_grok_models()
+                   if _grok_adapter and _grok_adapter.is_available() else None)
     warnings: list[str] = []
 
     if codex_cache:
@@ -383,6 +483,8 @@ def check_pins(project_root: Path, probe: bool = True,
         if key not in probed:
             if provider == "claude":
                 probed[key] = probe_claude_model(model)
+            elif provider == "grok":
+                probed[key] = probe_grok_model(model)
             else:
                 probed[key] = probe_codex_model(model, effort=effort)
         return probed[key]
@@ -445,13 +547,37 @@ def check_pins(project_root: Path, probe: bool = True,
         elif provider == "agy":
             verdict = UNVERIFIABLE
             detail = "agy always runs the UI-selected model (--model is inert in --print mode)"
+        elif provider == "grok":
+            if not variant:
+                verdict, detail = OK, "uses the grok default model"
+            else:
+                from provider.adapters.grok import _split_reasoning_effort as _grok_split
+                try:
+                    model_id, effort = _grok_split(variant)
+                except ValueError as e:
+                    entries.append({"spec": spec, "provider": provider, "variant": variant,
+                                    "verdict": BAD_EFFORT, "detail": str(e)})
+                    continue
+                if grok_models is None:
+                    # CLI present but `grok models` failed (logged out?) —
+                    # fall back to a live probe when allowed.
+                    if probe:
+                        verdict, detail = _probe("grok", model_id)
+                    else:
+                        verdict, detail = UNKNOWN, "`grok models` unavailable (logged out?); re-run without --no-probe"
+                elif model_id in grok_models:
+                    # The list is login-aware entitlements — no live turn needed.
+                    verdict, detail = OK, "in `grok models` (account-entitled list)"
+                else:
+                    verdict = GONE
+                    detail = f"'{model_id}' not in `grok models` (have: {', '.join(grok_models)})"
         else:  # pi
             verdict, detail = UNVERIFIABLE, "pi has no model-discovery surface"
         entries.append({"spec": spec, "provider": provider, "variant": variant,
                         "verdict": verdict, "detail": detail})
 
     return {"entries": entries, "codex": codex_cache, "codex_cli_version": codex_version,
-            "agy_models": agy_models,
+            "agy_models": agy_models, "grok_models": grok_models,
             "claude_candidates": claude_candidate_models(specs, claude_candidates),
             "warnings": warnings}
 
@@ -474,6 +600,10 @@ def render_report(report: dict) -> str:
         lines.append("\n=== agy models (pin NOT selectable from CLI — set in the agy UI) ===")
         for name in report["agy_models"]:
             lines.append(f"  {name}")
+    if report.get("grok_models") is not None:
+        lines.append("\n=== grok models (account-entitled list from `grok models`) ===")
+        for name in report["grok_models"]:
+            lines.append(f"  {name}")
     if report.get("claude_candidates"):
         lines.append("\n=== claude candidates (known ids only — claude has no list "
                      "command; add new ids with --claude-candidates) ===")
@@ -491,7 +621,7 @@ def bad_pins(report: dict) -> list[dict]:
 
 
 def confirm_dead_specs(failed_outputs: dict, spec_providers: dict, *,
-                       probe_claude=None, probe_codex=None) -> dict:
+                       probe_claude=None, probe_codex=None, probe_grok=None) -> dict:
     """Probe-confirm which FAILED judge specs are actually dead.
 
     The shared hard-stop gate for panel and single-judge reviews:
@@ -504,11 +634,14 @@ def confirm_dead_specs(failed_outputs: dict, spec_providers: dict, *,
     Probes are injectable for tests. Returns {spec_label: (verdict, detail)}
     holding only probe-confirmed GONE / NEEDS_CLI_UPGRADE specs — agy/pi,
     variantless pins, and local effort-spec errors are unconfirmable and
-    skipped (they keep today's soft-fail).
+    skipped (they keep today's soft-fail). grok pins ARE confirmable (a bad
+    -m fails pre-turn with a stable signature, task 014).
     """
     from provider.adapters.codex import _split_reasoning_effort
+    from provider.adapters.grok import _split_reasoning_effort as _grok_split
     probe_claude = probe_claude or probe_claude_model
     probe_codex = probe_codex or probe_codex_model
+    probe_grok = probe_grok or probe_grok_model
     confirmed: dict = {}
     for spec in sorted(failed_outputs):
         if classify_failure(failed_outputs[spec]) not in (
@@ -523,6 +656,12 @@ def confirm_dead_specs(failed_outputs: dict, spec_providers: dict, *,
             except ValueError:
                 continue  # local spec error, not availability
             pv, detail = probe_codex(model_id, effort=effort)
+        elif provider == "grok" and variant:
+            try:
+                model_id, _effort = _grok_split(variant)
+            except ValueError:
+                continue  # local spec error, not availability
+            pv, detail = probe_grok(model_id)
         else:
             continue
         if pv in (GONE, NEEDS_CLI_UPGRADE):
@@ -578,7 +717,7 @@ def run_select(project_root: Path, probe: bool = True,
         print(f"  {i}. {spec}")
     print("\nEnter the new panel as comma-separated judge specs")
     print("(provider:variant[:effort] / bare provider / alias — e.g. "
-          "claude:claude-fable-5, codex:gpt-5.5:xhigh, agy).")
+          "claude:claude-fable-5, codex:gpt-5.5:xhigh, grok:grok-build, agy).")
     print("Empty input keeps the current panel unchanged.")
     try:
         raw = input("panel> ").strip()
@@ -603,6 +742,12 @@ def run_select(project_root: Path, probe: bool = True,
         if provider == "codex" and variant:
             try:
                 _split_reasoning_effort(variant)
+            except ValueError as e:
+                return str(e)
+        if provider == "grok" and variant:
+            from provider.adapters.grok import _split_reasoning_effort as _grok_split
+            try:
+                _grok_split(variant)
             except ValueError as e:
                 return str(e)
         return None

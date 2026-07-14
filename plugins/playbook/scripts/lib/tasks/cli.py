@@ -1039,15 +1039,15 @@ def main():
 
         # --provider: install provider-specific bootstrap file (additive)
         if provider:
-            _PROVIDER_MAP = {"codex": "CodexAdapter", "antigravity": "AntigravityAdapter", "pi": "PiAdapter"}
+            _PROVIDER_MAP = {"codex": "CodexAdapter", "antigravity": "AntigravityAdapter", "pi": "PiAdapter", "grok": "GrokAdapter"}
             if provider not in _PROVIDER_MAP:
-                print(f"Error: unknown provider '{provider}'. Choose: codex, antigravity, pi", file=sys.stderr)
+                print(f"Error: unknown provider '{provider}'. Choose: codex, antigravity, grok, pi", file=sys.stderr)
                 sys.exit(1)
             import importlib
             adapter_cls_name = _PROVIDER_MAP[provider]
             mod = importlib.import_module(f"provider.adapters.{provider}")
             adapter_cls = getattr(mod, adapter_cls_name)
-            bootstrap_file = {"codex": "AGENTS.md", "antigravity": "GEMINI.md", "pi": "AGENTS.md"}[provider]
+            bootstrap_file = {"codex": "AGENTS.md", "antigravity": "GEMINI.md", "pi": "AGENTS.md", "grok": "AGENTS.md"}[provider]
             bs_path = target / bootstrap_file
             already_existed = bs_path.exists()
             adapter = adapter_cls("init", target)
@@ -1056,7 +1056,7 @@ def main():
             if install_provider_hooks:
                 adapter.install_hooks(target)
         elif install_provider_hooks:
-            print("Error: --hooks requires --provider codex, antigravity, or pi", file=sys.stderr)
+            print("Error: --hooks requires --provider codex, antigravity, grok, or pi", file=sys.stderr)
             sys.exit(1)
 
     elif cmd == "bootstrap":
@@ -1226,11 +1226,13 @@ def main():
         from provider.adapters.codex import CodexAdapter
         from provider.adapters.antigravity import AntigravityAdapter
         from provider.adapters.pi import PiAdapter
+        from provider.adapters.grok import GrokAdapter
         from provider.sandbox import load_judge_config, resolve_judge_spec
-        PANEL_ADAPTERS = (ClaudeAdapter, CodexAdapter, AntigravityAdapter, PiAdapter)
+        PANEL_ADAPTERS = (ClaudeAdapter, CodexAdapter, AntigravityAdapter, GrokAdapter, PiAdapter)
         _JUDGE_ADAPTERS = {
             "claude": ClaudeAdapter, "codex": CodexAdapter,
             "agy": AntigravityAdapter, "pi": PiAdapter,
+            "grok": GrokAdapter,
         }
 
         # Judge-set precedence: --models flag → models.json `panel` (shipped ⊕
@@ -1404,7 +1406,7 @@ def main():
         review_cmd = cmd
         if not cmd_args:
             print(f"Error: '{review_cmd}' requires a task number", file=sys.stderr)
-            print(f"Usage: tasks {review_cmd} <number> [--backend codex|claude|agy|pi] [--model <variant>] [--prompt \"...\"] [--timeout SECONDS] [--budget USD]  (default backend: models.json default_judge, ships codex; --budget is claude-only)", file=sys.stderr)
+            print(f"Usage: tasks {review_cmd} <number> [--backend codex|claude|agy|grok|pi] [--model <variant>] [--prompt \"...\"] [--timeout SECONDS] [--budget USD]  (default backend: models.json default_judge, ships codex; --budget is claude-only)", file=sys.stderr)
             sys.exit(1)
 
         import subprocess
@@ -1455,9 +1457,9 @@ def main():
             backend = "antigravity"
         elif backend == "qwen":
             backend = "pi"
-        if backend not in ("claude", "codex", "antigravity", "pi"):
+        if backend not in ("claude", "codex", "antigravity", "grok", "pi"):
             print(f"Error: unknown backend '{backend}'", file=sys.stderr)
-            print("Supported: codex (default), claude, antigravity (alias: agy), pi (alias: qwen)", file=sys.stderr)
+            print("Supported: codex (default), claude, antigravity (alias: agy), grok, pi (alias: qwen)", file=sys.stderr)
             sys.exit(1)
 
         if not remaining_args:
@@ -1665,6 +1667,60 @@ def main():
             except subprocess.TimeoutExpired:
                 _bail_review_timeout()
 
+        elif backend == "grok":
+            if not shutil.which("grok"):
+                print("Error: 'grok' not found on PATH", file=sys.stderr)
+                sys.exit(1)
+
+            prompt = prompt_fn(task_path, inline_context=True)
+            if extra_prompt:
+                prompt += f"\n\nAdditional steering from the user:\n{extra_prompt}"
+
+            # Argv construction is delegated to the adapter — it owns the
+            # dialect (prompt as `-p` value, model:effort split, context
+            # inlined ahead of the prompt). Task-013 lesson: inline argv
+            # copies drift from the adapter; don't make a fifth one.
+            # Judge-only extra: grok's web tools are default-on — strip them.
+            from provider.adapters.grok import GrokAdapter
+            try:
+                inv = GrokAdapter("judge", project_path).headless_argv(
+                    prompt, model, context=system_context)
+            except ValueError as e:  # bad model:effort spec — fail pre-spawn
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            grok_args = inv.argv + ["--disable-web-search"]
+
+            # Windows caps the whole command line at 32,767 chars (WinError
+            # 206); grok reads its prompt from argv (stdin is not a prompt
+            # channel) — fail fast like the agy/pi arms.
+            if os.name == "nt":
+                payload = sum(len(a) + 1 for a in grok_args)
+                if payload > 30_000:
+                    print(f"Error: grok judge prompt+context is ~{payload} chars on argv; "
+                          "Windows caps the command line at 32,767 chars and grok reads its "
+                          "prompt from argv — shrink the context or use another backend.",
+                          file=sys.stderr)
+                    sys.exit(1)
+
+            grok_env = os.environ.copy()
+            grok_env["PLAYBOOK_SESSION_ID"] = "judge"
+
+            from provider import sandbox as _sandbox
+            print(f"Running {review_label} (grok) on {task_path}...", flush=True)
+            try:
+                result = _sandbox.run(
+                    "grok", grok_args,
+                    project_root=project_path,
+                    env=grok_env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=review_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                _bail_review_timeout()
+
         else:  # pi (local Qwen via oMLX)
             if not (shutil.which("pi") or shutil.which("omlx")):
                 print("Error: neither 'pi' nor 'omlx' found on PATH", file=sys.stderr)
@@ -1728,6 +1784,7 @@ def main():
             "claude": "judge.log",
             "codex": "judge-codex.log",
             "antigravity": "judge-agy.log",
+            "grok": "judge-grok.log",
             "pi": "judge-pi.log",
         }.get(backend, "judge.log")
         judge_log = task_file.parent / log_name
@@ -1755,10 +1812,15 @@ def main():
             else:
                 print(f"\nReview failed (exit {result.returncode}); no output to save", flush=True)
         else:
-            if backend == "claude":
-                judge_log.write_text(result.stdout or "", encoding="utf-8")
-            # codex: -o already writes the file; write stdout as fallback
-            elif not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
+            # Only codex writes its own log file (via `-o`); for it, stdout is a
+            # fallback used only when that file is missing/empty. Every other
+            # backend (claude/antigravity/grok/pi) MUST have stdout written here
+            # — and OVERWRITTEN on each successful re-review, else a second run
+            # prints "Saved" while silently keeping the stale log (task 014 I4).
+            if backend == "codex":
+                if not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
+                    judge_log.write_text(result.stdout or "", encoding="utf-8")
+            else:
                 judge_log.write_text(result.stdout or "", encoding="utf-8")
             print(f"\nSaved: {judge_log.relative_to(project_path)}", flush=True)
 

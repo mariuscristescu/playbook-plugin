@@ -100,7 +100,7 @@ Per-install review knobs live in `.agent/config.json` (created by `/playbook:ini
 }
 ```
 
-- `judge_budget_usd` — spend cap for the **claude** judge (`--max-budget-usd`). Claude-only; codex/agy/pi have no budget knob.
+- `judge_budget_usd` — spend cap for the **claude** judge (`--max-budget-usd`). Claude-only; codex/agy/grok/pi have no budget knob.
 - `review_timeout_secs` — hard timeout for every review agent (plan / impl / panel). On expiry the whole process tree is terminated and the prior review log is left untouched. (Single-judge `plan-review` / `impl-review` previously had *no* timeout — they now default to 300s like the panel; raise it if your reviews legitimately run longer.)
 
 Precedence, highest first: **CLI flag** (`--budget`, `--timeout` on `plan-review` / `impl-review` / `panel-review`) → **env var** (`PLAYBOOK_JUDGE_BUDGET_USD`, `PLAYBOOK_REVIEW_TIMEOUT_SECS`) → **`.agent/config.json`** → built-in default. A missing file or malformed value falls back to the default (surfaced by `tasks doctor`, never fatal).
@@ -109,7 +109,7 @@ Precedence, highest first: **CLI flag** (`--budget`, `--timeout` on `plan-review
 
 Judge selection lives in `models.json`: the plugin ships defaults in `provider/models.json`, and each install can shadow them per key with a gitignored `.agent/models.json` (`default_judge`, `panel`, `aliases`). Pinned model ids rot as providers ship and retire models, so the pins have a maintenance loop:
 
-- `tasks models check` audits every pin against **live availability**: codex pins are probed with a tiny prompt (the `~/.codex/models_cache.json` catalog alone doesn't prove your account can use a model), claude pins are probed budget-capped (claude has no list command — new ids enter via `--claude-candidates`), agy is unverifiable (`--model` is inert in `--print` mode; the judge always runs whatever model is selected in the agy UI). `--no-probe` is the free/fast degraded audit. Exits 1 when any pin can't run as configured.
+- `tasks models check` audits every pin against **live availability**: codex pins are probed with a tiny prompt (the `~/.codex/models_cache.json` catalog alone doesn't prove your account can use a model), claude pins are probed budget-capped (claude has no list command — new ids enter via `--claude-candidates`), grok pins are checked against `grok models` (a login-aware entitlement list, so a listed pin is OK without a live turn), agy is unverifiable (`--model` is inert in `--print` mode; the judge always runs whatever model is selected in the agy UI). `--no-probe` is the free/fast degraded audit. Exits 1 when any pin can't run as configured.
 - `tasks models select` refreshes interactively: shows the report, takes the new panel + default judge, writes `.agent/models.json` — creating it on fresh installs and preserving keys it doesn't manage.
 - `tasks doctor` warns (never fails) on a missing models.json or dead pins, using the cheap checks only.
 - When a review judge fails **specifically because its model no longer exists** — probe-confirmed, not just pattern-matched — the review still saves its output, then prints the availability report and exits nonzero: a deliberate hard stop so you re-pin before trusting a degraded panel. Timeouts, budget caps, and other errors keep their soft behavior.
