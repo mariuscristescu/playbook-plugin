@@ -1,9 +1,9 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "claude-playbook-marketplace",
+  "name": "playbook-x-marketplace",
   "description": "Workflow enforcement and task management for Claude Code",
   "owner": {
-    "name": "Horia Cristescu"
+    "name": "Marius Cristescu"
   },
   "plugins": [
     {

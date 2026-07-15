@@ -377,7 +377,7 @@ if [ -z "$SCRIPT" ]; then
 fi
 if [ -z "$SCRIPT" ]; then
     echo "Error: playbook plugin not found." >&2
-    echo "Install: claude plugin marketplace add horiacristescu/claude-playbook-plugin" >&2
+    echo "Install: claude plugin marketplace add mariuscristescu/playbook-plugin" >&2
     exit 1
 fi
 exec "$SCRIPT" "$@"
