@@ -2,6 +2,8 @@
 
 A Claude Code plugin for building software you can trust. The agent remembers your project across sessions, works in small reviewed tasks, and tests as it builds.
 
+> **Fork notice** — This is an independent fork of [Claude Playbook](https://github.com/horiacristescu/claude-playbook-plugin), created by **Horia Cristescu**, maintained by **Marius Cristescu** for our own feature development. It ships as a separate marketplace (`playbook-x-marketplace`), so install *either* this fork or the upstream — never both at once. The [Install](#install) section below points at this fork.
+
 → [Slide deck](https://horiacristescu.github.io/claude-playbook-plugin/docs/Playbook.pdf) — where Playbook fits among current coding agent harnesses (April 2026).
 
 ## What it looks like
@@ -47,7 +49,8 @@ Because state lives in the file and not in memory, execution survives context co
 ## Install
 
 ```
-claude plugin marketplace add horiacristescu/claude-playbook-plugin
+claude plugin marketplace add mariuscristescu/playbook-plugin
+claude plugin install playbook@playbook-x-marketplace
 ```
 
 Restart Claude Code, then in any project tell the agent `/playbook:init`. This creates `CLAUDE.md`, `MIND_MAP.md`, and `.claude/bin/tasks` - the task CLI.
