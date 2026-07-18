@@ -1,0 +1,92 @@
+# Tasks CLI reference
+
+Everything the `tasks` CLI does. In a playbook-managed project the agent calls it as `.claude/bin/tasks` — you normally never type these yourself; this page is for understanding what the agent is doing (and for maintainers).
+
+## Workflow
+
+**`tasks work <N>`** — activate task N. Writes the per-session state that the hooks read, which arms the edit gate: from this moment the agent may touch code, and every tool call gets the current gate echoed back at it. Activation is deliberately separate from creation — a task that was merely created enforces nothing.
+
+**`tasks work done`** — deactivate the current task and mark its status done. This is the only sanctioned way to close a task; editing `## Status` by hand leaves the session state and the document disagreeing.
+
+**`tasks freehand`** — freehand mode: you drive, the agent executes, and the hooks stop pressuring for gates until the next task is activated. For exploration, quick experiments, and pairing sessions where the task ceremony would get in the way.
+
+## Create
+
+**`tasks new <type> <name> [intent]`** — create `.agent/tasks/<N>-<type>-<name>/task.md` from the base template, with the intent text filled in if given. The type selects the workflow pattern the plan will follow: `feature`→Build, `bug`→Fix, `explore`→Investigate, `review`→Evaluate. Recent chat messages are captured into the task's References so the plan can be checked against what you actually said. Creation does **not** activate — the agent should immediately run `tasks work <N>`.
+
+**`tasks new --stub <type> <name> [intent]`** — create a lightweight stub that expands into the full template when activated. For capturing future work the moment you think of it, without paying the template cost yet.
+
+## Review (judges)
+
+The review commands exist because an agent that reviews its own plan inside the conversation just agrees with itself. A judge is a separate headless agent that sees the repository but **not** your chat — so it can't anchor to the approach already committed to.
+
+**`tasks plan-review <N>`** — single blind judge reads task N's plan before any code is written; findings are inserted into the task.md, where the agent must triage each one (accept/park/reject) rather than obey blindly.
+
+**`tasks impl-review <N>`** — the same, after implementation: does every Intent claim trace down through code to tests?
+
+**`tasks panel-review [<N>]`** — fan the review out to every judge seat in `.agent/models.json` in parallel (different models, different providers — panels catch problems a single judge misses); results land in the task's `judge.md`. The task number is optional: `--prompt "..."` alone turns it into a general-purpose multi-model consultation on any question, and `--bare` strips the repo context too. Other flags: `--mode impl` (implementation stage), `--models a,b` (override the panel for one run), `--timeout <secs>` / `--budget <usd>` (override [configuration](configuration.md) for one run).
+
+**`tasks judge`** — the low-level runner behind the review commands; use `plan-review` / `impl-review` instead.
+
+**`tasks models check [--no-probe]`** — audit every judge pin against live availability. Pinned model ids rot as providers retire models; this catches it before a review silently degrades. Probes cost a few tiny model calls; `--no-probe` is the free degraded audit. Exits 1 when a pin can't run as configured.
+
+**`tasks models select`** — guided refresh of the panel: shows the availability report, takes the new seat list, writes `.agent/models.json` (creating it on fresh installs, preserving keys it doesn't manage).
+
+## Analysis & retro
+
+**`tasks retro [--since N]`** — project retrospective across completed tasks: what got built, what patterns recur, where the workflow fought you. Input for pruning the mind map and improving future plans.
+
+**`tasks global-retro-collect --since DATE ROOT [ROOT...]`** — collect a retro archive across several playbook projects (e.g. multiple VMs or repos) into one place, for cross-project analysis.
+
+**`tasks intent <N>`** — vertical retro of one finished task: several blind extractions infer the task's intent from its different layers (chat, plan, code, tests), the disagreements get reconciled with you, and the distilled result is written to `INTENT.md`. Surfaces the gap between what you asked for and what the trace says happened.
+
+**`tasks context <N>`** — extract the chat messages attributed to task N. Useful when revisiting an old task and the task.md alone doesn't explain a decision.
+
+**`tasks log [N] [--width W]`** — compact one-line-per-message view of the chat log (`.agent/chat_log.md`) — the quick way to scan what was said without the gate echo noise.
+
+**`tasks timeline` / `tasks tagger` / `tasks tag`** — internal retro-support tooling: chronological reconstruction of tasks + messages, and tagging tasks for retro analysis. Not part of the daily workflow.
+
+## Health & merge
+
+**`tasks doctor`** — harness health check: project structure, config shape, judge pins, hook wiring, session state, encoding. Advisory findings warn but never fail — doctor's contract is to inform, not block. In the plugin's own source checkout it additionally warns when shipped features have moved past the last README audit (silent everywhere else).
+
+**`tasks merge-doctor`** — audit a multi-user repo before/after a merge for the three things plain `git merge` gets wrong in playbook repos: stranded conflict markers in prose files, per-user namespace cross-contamination, and legacy `.agent/` paths.
+
+**`tasks prepare-merge <source> [target]`** — merge preparation used by the merge skill: stages the cross-namespace merge so the verifier can prove it clean.
+
+**`tasks mindmap-sync`** — mind-map merge support (conflict-marker-safe synchronization), also driven by the merge skill.
+
+## Orientation
+
+**`tasks bootstrap`** — session-start orientation: prints the mind map (the project's memory), pending tasks, and the CLI reference. The agent runs this as its first action in every session — it's how session thirty picks up from session one.
+
+**`tasks list [--pending]`** (alias `ls`) — task overview table; `--pending` hides finished work.
+
+**`tasks status`** — the active task's current gate position: the fastest way to see where a long run actually is.
+
+**`tasks init [--provider codex|antigravity|grok|pi] [--hooks]`** — mechanical project setup (normally invoked via `/playbook:init`): `.agent/` structure, `.claude/bin/` wrappers, settings, MIND_MAP.md stub. With `--provider`, additionally writes that agent's bootstrap file (`AGENTS.md` / `GEMINI.md`) and, with `--hooks`, installs its hook integration — see [providers](providers.md).
+
+## Slash commands (user-invoked)
+
+| Command | What it does |
+|---|---|
+| `/playbook:init` | Initialize or upgrade a project for the playbook workflow (runs `tasks init` + scaffolding). |
+| `/playbook:mindmap` | Generate `MIND_MAP.md` by analyzing the codebase — the agent's persistent memory; run this right after init. |
+| `/playbook:mindmap-optimize` | Audit the mind map for staleness, compression opportunities, and sync issues. |
+| `/playbook:playbook` | Show the workflow patterns reference (Build/Fix/Investigate/Evaluate) — how the agent structures plans. |
+| `/playbook:freehand` | Enter freehand mode — user drives, no gate pressure (same as `tasks freehand`). |
+| `/playbook:intent` | Vertical retro of a finished task, distilled to `INTENT.md` (front-end to `tasks intent`). |
+| `/playbook:upgrade` | Upgrade the plugin to the latest version. |
+
+## Skills (agent-loaded)
+
+Six skill bundles ship with the plugin; `tasks bootstrap` lists them so the agent knows they exist:
+
+| Skill | What it does |
+|---|---|
+| **playbook** | The composable workflow patterns (Build, Fix, Investigate, Evaluate, UI-debug, reflection gates) that task plans are built from. |
+| **judge** | The blind-evaluation pattern: spawn an independent judge with repo access but no conversation, verdict to a shared file. |
+| **monitor** | The trajectory watcher: a second agent reads the session transcript incrementally and nudges when the work drifts ([architecture](architecture.md)). |
+| **merge** | End-to-end verified branch merge for multi-user playbook repos — namespace contamination checks, mind-map conflict handling, deterministic verifiers, optional `--push`. |
+| **stack** | Default tech-stack picks ("Bedrock stack") for scaffolding fresh projects when nothing is specified — boring, typed, observable. |
+| **tasks** | The canonical task template the `new` command copies. |

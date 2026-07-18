@@ -1323,6 +1323,19 @@ def main():
             print("defaults, which drift as providers retire models. Relay to the user:")
             print("pin per-machine judges via `tasks models check` + `tasks models select`.")
 
+        # README drift nudge (task 017): maintainer-only — silently a no-op
+        # outside a plugin source checkout / dogfood workspace. Advisory, so
+        # bootstrap must never crash on it.
+        try:
+            from tasks.readme_drift import readme_drift
+            _drift = readme_drift(project_path)
+            if _drift:
+                print()
+                for _msg in _drift:
+                    print(f"NOTE: {_msg}")
+        except Exception:
+            pass
+
         # CLI reference — shown last so mind map + tasks aren't buried
         from tasks.template import cli_reference
         print()
@@ -2870,6 +2883,15 @@ def main():
                      f"refresh with `tasks models select`")
         except Exception as e:  # doctor must never crash on an advisory check
             warn("models: pin check ran", f"skipped ({e})")
+
+        # 1d. README drift (task 017) — maintainer-only advisory. Silently a
+        # no-op outside a plugin source checkout / dogfood workspace.
+        try:
+            from tasks.readme_drift import readme_drift
+            for _msg in readme_drift(project_path):
+                warn("readme: audit drift", _msg)
+        except Exception as e:  # doctor must never crash on an advisory check
+            warn("readme: drift check ran", f"skipped ({e})")
 
         # 2. Unicode
         stdout_enc = getattr(sys.stdout, "encoding", "unknown") or "unknown"
