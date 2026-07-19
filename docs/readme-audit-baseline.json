@@ -1,0 +1,13 @@
+{
+ "audited_commit": "97e87bf8539c5b8aa3b7da8bfd6afbfd173a4ebc",
+ "version": "1.4.2",
+ "date": "2026-07-19",
+ "covered_paths": [
+  "plugins/playbook/commands",
+  "plugins/playbook/skills",
+  "plugins/playbook/provider",
+  "plugins/playbook/tasks",
+  "plugins/playbook/hooks",
+  "plugins/playbook/scripts"
+ ]
+}

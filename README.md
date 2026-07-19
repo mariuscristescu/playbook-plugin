@@ -1,10 +1,12 @@
-# Claude Playbook
+# Playbook
 
-A Claude Code plugin for building software you can trust. The agent remembers your project across sessions, works in small reviewed tasks, and tests as it builds.
+A plugin for building software you can trust with coding agents — one workflow across Claude Code, Codex, Antigravity, Grok, and Pi. The agent remembers your project across sessions, works in small reviewed tasks, and tests as it builds.
 
 > **Fork notice** — This is an independent fork of [Claude Playbook](https://github.com/horiacristescu/claude-playbook-plugin), created by **Horia Cristescu**, maintained by **Marius Cristescu** for our own feature development. It ships as a separate marketplace (`playbook-x-marketplace`), so install *either* this fork or the upstream — never both at once. The [Install](#install) section below points at this fork.
 
-→ [Slide deck](https://horiacristescu.github.io/claude-playbook-plugin/docs/Playbook.pdf) — where Playbook fits among current coding agent harnesses (April 2026).
+→ [Slide deck](docs/Playbook.pdf) — where Playbook fits among current coding agent harnesses (April 2026).
+
+**Docs:** [CLI reference](docs/cli.md) · [Configuration](docs/configuration.md) · [Providers](docs/providers.md) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md)
 
 ## What it looks like
 
@@ -34,26 +36,45 @@ Because state lives in the file and not in memory, execution survives context co
 
 **The mind map** (`MIND_MAP.md`) is the project's memory - persistent across tasks and sessions. It captures both directions: intent and goals from the top down, architecture and structure from the bottom up. A new agent reads it at session start and is oriented in seconds, not minutes. Session thirty picks up from session one without re-learning anything.
 
-**The judge** reads the task plan before any code gets written. It sees the full codebase but not your conversation - no anchoring to whatever approach you already committed to in chat. On complex tasks, run a panel of several models; the hit rate on catching real problems goes up.
+**The judge** reads the task plan before any code gets written. It sees the full codebase but not your conversation - no anchoring to whatever approach you already committed to in chat. On complex tasks, run a panel of judges across several models and providers - the hit rate on catching real problems goes up. The panel comes from your `.agent/models.json`, and `tasks models check` / `tasks models select` keep the pins alive as providers retire models ([how to set up and maintain the panel](docs/configuration.md)).
 
 **The chat log** records every message you send. A gate in the design phase checks the task against it - pulling in things you said conversationally but never wrote down. If your messages and the task don't agree, that's a bug in the plan, not just a documentation gap.
 
-**Hooks** enforce the structure at the system level. The agent can't edit code without an active task, can't skip gates, can't mark work done with gates still open. Warnings don't stick, so we block instead.
+**Hooks** enforce the structure at the system level. The agent can't edit code without an active task, can't skip gates, can't mark work done with gates still open. Warnings don't stick, so we block instead. ([How enforcement works](docs/architecture.md).)
+
+**The monitor** is a second agent watching from outside: it reads the session transcript incrementally and nudges the working agent when the trajectory drifts - a separate context window, so it judges without the front agent's anchoring.
 
 **Tests** make the consequences of a wrong change visible immediately - the agent sees the failure and corrects course. The better the tests, the longer it can run unsupervised. Playbook leans heavily on this: the task.md template puts a test gate after each work gate, and we recommend expanding test coverage as part of every task.
 
 **The sandbox** lets you run the agent in full bypass-permissions mode - no prompts, no interruptions. The tradeoff is that blast radius is contained at the OS level: your project directory is writable, `.git` is read-only, and everything outside the project is blocked. You get the speed of unattended execution without the risk of it touching anything it shouldn't.
 
+**Five providers.** The same workflow runs on Claude Code, Codex, Antigravity (agy), Grok, and Pi - as the main agent (via the `playbook-*` launchers) and as judges on the review panel. ([Provider matrix](docs/providers.md).)
+
+**Skills** for recurring maneuvers: `/playbook:freehand` (you drive, no gate pressure), `/playbook:intent` (blind vertical retro of a finished task), a merge skill for multi-user repos, and default tech-stack picks for fresh projects. ([Full list](docs/cli.md).)
+
 <p align="center"><img src="assets/reactive_test_environment.png" width="600" alt="An AI agent in a go-kart racing inside concentric tire barriers labeled Unit Tests, Integration Tests, and E2E Tests, with a Safe Zone in the center"></p>
 
 ## Install
+
+Playbook installs through Claude Code's plugin manager - you need it once as the install channel, even if you drive a different agent day-to-day:
 
 ```
 claude plugin marketplace add mariuscristescu/playbook-plugin
 claude plugin install playbook@playbook-x-marketplace
 ```
 
-Restart Claude Code, then in any project tell the agent `/playbook:init`. This creates `CLAUDE.md`, `MIND_MAP.md`, and `.claude/bin/tasks` - the task CLI.
+Restart Claude Code, then in any project tell the agent `/playbook:init`. This creates `CLAUDE.md`, `MIND_MAP.md`, and `.claude/bin/` - the `tasks` CLI plus a launcher per agent (`playbook-codex`, `playbook-agy`, `playbook-grok`, `playbook-pi`).
+
+**Driving an agent other than Claude Code?** Add its bootstrap file - and its hook integration, where the agent supports one:
+
+```
+tasks init --provider codex --hooks     # writes AGENTS.md + the apply_patch edit gate
+tasks init --provider antigravity --hooks
+tasks init --provider grok              # grok finds the hooks natively; trust them once with /hooks-trust
+tasks init --provider pi                # the launcher itself enforces the gates
+```
+
+Then start that agent through its launcher - `.claude/bin/playbook-<agent>` - so it gets a Playbook session ID and the same task gating as Claude Code. Per-agent details: [providers](docs/providers.md).
 
 Then run `/playbook:mindmap` to build the initial mind map. The agent spends time mapping your code, tests, and docs - while you explain the goals and constraints that aren't in the code. The result is an agent that knows the internal geometry of your project before it touches anything. This is necessary, not optional: the mind map is the agent's memory and its starting point for every session that follows.
 
@@ -79,7 +100,7 @@ For plan review before the agent touches any code, ask for it explicitly:
 ```
 You:    "review the plan before coding"
 Agent:  tasks plan-review 12       # single judge, blind
-Agent:  tasks panel-review 12      # 7-model panel, higher discovery rate
+Agent:  tasks panel-review 12      # multi-model panel from models.json, higher discovery rate
 ```
 
 For hands-off execution, run in sandbox mode - `--dangerously-skip-permissions` inside OS-level write containment:
@@ -90,33 +111,13 @@ sandbox
 
 The sandbox uses macOS seatbelt or Linux bubblewrap. Your project directory is writable, `.git` is read-only, everything outside is blocked at the kernel level. The agent runs without permission prompts but can't escape the containment even if it tries. You still steer by chatting.
 
-Tell the agent what you want built, what constraints matter, and what done looks like. You can steer at any point by chatting - but as the mind map fills in, the agent learns the project's quirks and needs less of it. If you want to follow along, task.md is easier to watch than the chat feed - you see from above, gates checking one by one, outcomes piling up. When it finishes, every decision is recorded and every test result is there.
+When you want to drive yourself - quick experiments, exploration, no gate pressure - say so and the agent switches to freehand mode (`/playbook:freehand`); the hooks relax until the next task.
+
+Tell the agent what you want built, what constraints matter, and what done looks like. You can steer at any point by chatting - but as the mind map fills in, the agent learns the project's quirks and needs less of it. If you want to follow along, task.md is easier to watch than the chat feed. When it finishes, every decision is recorded and every test result is there. The full command set - reviews, retros, health checks, merge tooling - is in the [CLI reference](docs/cli.md).
 
 ## Configuration
 
-Per-install review knobs live in `.agent/config.json` (created by `/playbook:init`, hand-editable):
-
-```json
-{
-  "judge_budget_usd": 2,
-  "review_timeout_secs": 300
-}
-```
-
-- `judge_budget_usd` — spend cap for the **claude** judge (`--max-budget-usd`). Claude-only; codex/agy/grok/pi have no budget knob.
-- `review_timeout_secs` — hard timeout for every review agent (plan / impl / panel). On expiry the whole process tree is terminated and the prior review log is left untouched. (Single-judge `plan-review` / `impl-review` previously had *no* timeout — they now default to 300s like the panel; raise it if your reviews legitimately run longer.)
-
-Precedence, highest first: **CLI flag** (`--budget`, `--timeout` on `plan-review` / `impl-review` / `panel-review`) → **env var** (`PLAYBOOK_JUDGE_BUDGET_USD`, `PLAYBOOK_REVIEW_TIMEOUT_SECS`) → **`.agent/config.json`** → built-in default. A missing file or malformed value falls back to the default (surfaced by `tasks doctor`, never fatal).
-
-### Judge model pins (`.agent/models.json`)
-
-Judge selection lives in `models.json`: the plugin ships defaults in `provider/models.json`, and each install can shadow them per key with a gitignored `.agent/models.json` (`default_judge`, `panel`, `aliases`). Pinned model ids rot as providers ship and retire models, so the pins have a maintenance loop:
-
-- `tasks models check` audits every pin against **live availability**: codex pins are probed with a tiny prompt (the `~/.codex/models_cache.json` catalog alone doesn't prove your account can use a model), claude pins are probed budget-capped (claude has no list command — new ids enter via `--claude-candidates`), grok pins are checked against `grok models` (a login-aware entitlement list, so a listed pin is OK without a live turn), agy is unverifiable (`--model` is inert in `--print` mode; the judge always runs whatever model is selected in the agy UI). `--no-probe` is the free/fast degraded audit. Exits 1 when any pin can't run as configured.
-- `tasks models select` refreshes interactively: shows the report, takes the new panel + default judge, writes `.agent/models.json` — creating it on fresh installs and preserving keys it doesn't manage.
-- `tasks doctor` warns (never fails) on a missing models.json or dead pins, using the cheap checks only.
-- When a review judge fails **specifically because its model no longer exists** — probe-confirmed, not just pattern-matched — the review still saves its output, then prints the availability report and exits nonzero: a deliberate hard stop so you re-pin before trusting a degraded panel. Timeouts, budget caps, and other errors keep their soft behavior.
-- A judge that exhausts its budget cap is reported as **failed** with an explicit notice (raise `judge_budget_usd` or pass `--budget`) instead of masquerading as a successful empty review.
+Two small JSON files tune the review machinery per install: `.agent/config.json` (judge budget, review timeout) and `.agent/models.json` (which models sit on the judge panel; keep them alive with `tasks models check` / `select`). Details, precedence rules, and maintenance workflow: [docs/configuration.md](docs/configuration.md).
 
 ## Two agents, one task
 
@@ -137,3 +138,5 @@ Nodes cross-reference each other - **[5]** links to **[19]** which links back. W
 Not everything needs a task. Questions, shell commands, docs, git - just ask. The rule is simple: the moment the agent touches code files, declare a task first. The hooks enforce this.
 
 Works on macOS, Linux, and Windows.
+
+<!-- readme-audit: v1.4.2 @ 2026-07-18 -->
