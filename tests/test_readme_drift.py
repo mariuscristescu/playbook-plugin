@@ -24,6 +24,7 @@ sys.path.insert(0, str(_HERE.parent / "plugins/playbook"))
 from tasks.readme_drift import (  # noqa: E402
     BASELINE_REL,
     DEFAULT_COVERED_PATHS,
+    SKILL_REL,
     find_source_repo,
     readme_drift,
 )
@@ -38,8 +39,12 @@ def _git(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-def make_source_repo(root: Path, git: bool = True) -> Path:
-    """Lay down a minimal plugin source checkout and return its root."""
+def make_source_repo(root: Path, git: bool = True, skill: bool = True) -> Path:
+    """Lay down a minimal plugin source checkout and return its root.
+
+    skill=False models a vendored/upstream clone WITHOUT the audit skill —
+    which must never be treated as a maintainer context (impl-panel V4).
+    """
     root.mkdir(parents=True, exist_ok=True)
     manifest = root / "plugins" / "playbook" / ".claude-plugin" / "plugin.json"
     manifest.parent.mkdir(parents=True)
@@ -47,6 +52,10 @@ def make_source_repo(root: Path, git: bool = True) -> Path:
     (root / "README.md").write_text("# readme\n")
     (root / "plugins" / "playbook" / "commands").mkdir()
     (root / "plugins" / "playbook" / "commands" / "init.md").write_text("x\n")
+    if skill:
+        skill_file = root / SKILL_REL
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# readme-audit skill\n")
     if git:
         _git(root, "init", "-q")
         _git(root, "add", "-A")
@@ -228,6 +237,85 @@ class ReadmeDriftTest(unittest.TestCase):
         msgs = self._drift(repo=repo)
         self.assertEqual(len(msgs), 1)
         self.assertIn("1 commit(s)", msgs[0])
+
+    # --- impl-panel additions (task 017 triage V4-V7) ------------------------
+
+    def test_clone_without_audit_skill_silent(self):
+        # V4: a vendored/upstream playbook-shaped clone lacking the audit skill
+        # is NOT a maintainer context — no nag pointing at a nonexistent path.
+        repo = make_source_repo(self.tmp / "vendored", skill=False)
+        self.assertIsNone(
+            find_source_repo(module_file=self._module_in(repo), plugins_home=self.plugins_home)
+        )
+        ws = self.tmp / "host-ws"
+        make_source_repo(ws / "vendored-clone", skill=False)
+        self.assertEqual(
+            readme_drift(project_path=ws, module_file=self.tmp / "nowhere" / "m.py",
+                         plugins_home=self.plugins_home),
+            [],
+        )
+
+    def test_marketplaces_module_falls_through_to_dogfood_child(self):
+        # V5/grok-F4: module inside the plugins-home marketplaces clone (signal 1
+        # must break, not return) + dogfood workspace child → signal 2 fires.
+        mkt = make_source_repo(self.plugins_home / "marketplaces" / "mkt")
+        ws = self.tmp / "workspace"
+        child = make_source_repo(ws / "playbook-plugin")
+        found = find_source_repo(
+            project_path=ws,
+            module_file=mkt / "plugins" / "playbook" / "tasks" / "readme_drift.py",
+            plugins_home=self.plugins_home,
+        )
+        self.assertEqual(found, child)
+
+    def test_cache_module_dogfood_child_fires_and_fresh_silent(self):
+        # V5/grok-F5: the production daily layout end-to-end — installed-cache
+        # module (signal 1 no match) + dogfood child checkout, through
+        # readme_drift() itself: stale baseline fires, fresh baseline silent.
+        cache_mod = self.plugins_home / "cache" / "mkt" / "playbook" / "1.0.0" / "tasks" / "readme_drift.py"
+        ws = self.tmp / "workspace"
+        child = make_source_repo(ws / "playbook-plugin")
+        write_baseline(child, _git(child, "rev-parse", "HEAD"))
+        surface_commit(child)
+        msgs = readme_drift(project_path=ws, module_file=cache_mod, plugins_home=self.plugins_home)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("1 commit(s) touched user-facing paths", msgs[0])
+        self.assertIn(SKILL_REL, msgs[0])
+        write_baseline(child, _git(child, "rev-parse", "HEAD"))  # refresh
+        self.assertEqual(
+            readme_drift(project_path=ws, module_file=cache_mod, plugins_home=self.plugins_home),
+            [],
+        )
+
+    def test_covered_paths_wrong_type_soft_message(self):
+        # V6: a bare string (or any non-list) must hit the unreadable-baseline
+        # soft path, not char-iterate into bogus pathspecs or TypeError.
+        for bad in ("plugins/playbook", 42, {"a": 1}):
+            repo_dir = self.tmp / f"checkout-{type(bad).__name__}"
+            repo = make_source_repo(repo_dir)
+            baseline = repo / BASELINE_REL
+            baseline.parent.mkdir(parents=True, exist_ok=True)
+            baseline.write_text(json.dumps({
+                "audited_commit": _git(repo, "rev-parse", "HEAD"),
+                "version": "9.9.9", "covered_paths": bad,
+            }))
+            msgs = self._drift(repo=repo)
+            self.assertEqual(len(msgs), 1, bad)
+            self.assertIn("unreadable", msgs[0])
+
+    def test_git_unavailable_stays_silent(self):
+        # V7: subprocess failure (no git binary / timeout) → advisory silence.
+        import tasks.readme_drift as rd
+        repo = make_source_repo(self.tmp / "checkout")
+        write_baseline(repo, "0" * 40)
+        real_run = rd.subprocess.run
+        def boom(*a, **k):
+            raise OSError("git not found")
+        rd.subprocess.run = boom
+        try:
+            self.assertEqual(self._drift(repo=repo), [])
+        finally:
+            rd.subprocess.run = real_run
 
 
 if __name__ == "__main__":

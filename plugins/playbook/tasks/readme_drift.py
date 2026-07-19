@@ -46,10 +46,14 @@ DEFAULT_COVERED_PATHS = [
 
 
 def _is_source_repo(root: Path) -> bool:
+    # SKILL_REL doubles as the maintainer marker: a vendored/upstream clone
+    # without the audit skill must never be nagged toward a path it lacks
+    # (impl-panel V4).
     return (
         (root / "plugins" / "playbook" / ".claude-plugin" / "plugin.json").is_file()
         and (root / "README.md").is_file()
         and (root / ".git").exists()
+        and (root / SKILL_REL).is_file()
     )
 
 
@@ -123,8 +127,13 @@ def readme_drift(
             raise ValueError("baseline is not a JSON object")
         sha = str(baseline.get("audited_commit") or "")
         version = str(baseline.get("version") or "?")
-        paths = [p for p in (baseline.get("covered_paths") or []) if isinstance(p, str)]
-    except (ValueError, OSError):
+        raw_paths = baseline.get("covered_paths") or []
+        # Must be a list of strings: a bare string would char-iterate into
+        # bogus pathspecs, other types TypeError past this net (impl-panel V6).
+        if not isinstance(raw_paths, list):
+            raise ValueError("covered_paths is not a list")
+        paths = [p for p in raw_paths if isinstance(p, str) and p]
+    except (ValueError, TypeError, OSError):
         return [
             f"README audit baseline unreadable ({BASELINE_REL}) — re-run the audit: {skill}"
         ]

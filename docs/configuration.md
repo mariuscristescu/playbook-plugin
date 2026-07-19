@@ -1,6 +1,6 @@
 # Configuration
 
-Two per-install JSON files, both under `.agent/` in your project (created by `/playbook:init`, hand-editable, machine-specific — `models.json` is gitignored by design).
+Two per-install JSON files, both under `.agent/` in your project, hand-editable and machine-specific: `config.json` is created by `/playbook:init`; `models.json` is deliberately NOT — create it with `tasks models select` (or by hand). It's gitignored by design.
 
 ## `.agent/config.json` — review knobs
 

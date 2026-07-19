@@ -41,7 +41,7 @@ A second Claude process that watches the front agent's session transcript increm
 
 ## The sandbox
 
-`.claude/bin/sandbox` runs the agent with `--dangerously-skip-permissions` inside OS-level containment: **macOS seatbelt** or **Linux bubblewrap** with deny-write-by-default. The project directory is writable, `.git` is read-only (history can't be mangled), everything outside is blocked at the kernel level. Pairs with the task system for the "two agents, one task" pattern: orchestrator outside, worker inside, task.md as the handoff.
+`.claude/bin/sandbox` runs the agent with `--dangerously-skip-permissions` inside OS-level containment: **macOS seatbelt** or **Linux bubblewrap** with deny-write-by-default. The project directory is writable, `.git` is read-only (history can't be mangled), everything outside is blocked at the kernel level. One honest caveat: when no containment primitive is available (neither `sandbox-exec` nor `bwrap`, or nesting inside a foreign sandbox forbids it), the agent currently runs with bypass flags and **no** kernel containment — check your platform has one of the two before relying on the blast-radius guarantee. Pairs with the task system for the "two agents, one task" pattern: orchestrator outside, worker inside, task.md as the handoff.
 
 ## Judges
 

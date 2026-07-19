@@ -15,7 +15,9 @@ description: Maintainer-only audit of the playbook plugin's shipped surface (com
 
 ## Step 0 — Preflight (fail loud, never silently under-report)
 
-Resolve `REPO` = the plugin source repo root. Verify ALL of the following exist — if ANY is missing, STOP and report which one; do not continue with a partial inventory:
+Resolve `REPO` = the plugin source repo root: **the git root three levels above this SKILL.md's own location** (`<REPO>/.claude/skills/readme-audit/SKILL.md`). If you were invoked by path, that path tells you `REPO`; verify with `git -C "$REPO" rev-parse --show-toplevel`. Do NOT assume `REPO` = cwd — maintenance sessions usually sit in the dogfood *workspace*, one level above the checkout.
+
+Verify ALL of the following exist — if ANY is missing, STOP and report which one; do not continue with a partial inventory:
 
 ```bash
 test -f "$REPO/plugins/playbook/.claude-plugin/plugin.json"   # plugin manifest
@@ -30,7 +32,7 @@ git -C "$REPO" rev-parse HEAD                                 # must be a git ch
 
 These paths are this skill's ground truth. If the repo layout ever changes, FIX THIS FILE in the same task — a glob that quietly matches nothing recreates the drift this skill exists to kill.
 
-Mode select: if `$REPO/docs/readme-audit-baseline.json` exists → **incremental mode** (Step 1b); else → **full mode** (Step 1a).
+Mode select: if `$REPO/docs/readme-audit-baseline.json` exists AND is committed clean (`git -C "$REPO" status --porcelain docs/readme-audit-baseline.json` prints nothing) → **incremental mode** (Step 1b). If it exists but is untracked/dirty, a previous landing crashed between the baseline write and its commit — finish Step 4's baseline commit first, then re-select. Else → **full mode** (Step 1a).
 
 ## Step 1a — Inventory (full mode): enumerate from live sources only
 
@@ -42,9 +44,10 @@ ls -d "$REPO/plugins/playbook/skills/"*/                      # skill bundles
 ls "$REPO/plugins/playbook/provider/adapters/"*.py            # providers (ignore __init__/__pycache__)
 grep -nE '^\s+(el)?if cmd (==|in)' "$REPO/plugins/playbook/tasks/cli.py"   # CLI subcommands
 ls "$REPO/plugins/playbook/scripts/" | grep '^playbook-'      # provider wrappers (NOTE: also matches pi support files *.ts/*.json — launchers are the extensionless ones)
-python3 -c "import json;h=json.load(open('$REPO/plugins/playbook/hooks/hooks.json'));print(list(h.get('hooks',h)))"
-grep -rhoE 'PLAYBOOK_[A-Z_]+' "$REPO/plugins/playbook/tasks/" "$REPO/plugins/playbook/provider/" | sort -u
-grep -oE '"[a-z_]+"' "$REPO/plugins/playbook/tasks/core.py" | grep -E 'judge_budget|review_timeout'  # config keys (verify against load_config call sites)
+for f in "$REPO/plugins/playbook/scripts/"*; do [ -f "$f" ] && [ -x "$f" ] && basename "$f"; done   # ALL shipped executables (init, sandbox, monitor, hook scripts…), not just wrappers
+python3 -c "import json;h=json.load(open('$REPO/plugins/playbook/hooks/hooks.json'));import re;print(sorted({c for v in (h.get('hooks',h)).values() for e in v for hh in e.get('hooks',[e]) for c in [hh.get('command','')] if c}))"   # hook command targets
+grep -rhoE 'PLAYBOOK_[A-Z_]+' "$REPO/plugins/playbook/tasks/" "$REPO/plugins/playbook/provider/" "$REPO/plugins/playbook/scripts/" 2>/dev/null | sort -u
+grep -rhoE 'load_config\([^)]*\)\.get\("[a-z_]+"\)' "$REPO/plugins/playbook/tasks/" | grep -oE '"[a-z_]+"' | sort -u   # config.json keys, from the actual read sites — no hardcoded key filter
 python3 -c "import json;print(json.load(open('$REPO/plugins/playbook/.claude-plugin/plugin.json'))['version'])"
 ```
 
@@ -55,7 +58,17 @@ Then cross-check EVERY enumerated item against `README.md` + every `docs/*.md` p
 Read the baseline, then diff only what moved:
 
 ```bash
-git -C "$REPO" log --oneline <baseline.audited_commit>..HEAD -- $(baseline.covered_paths)
+python3 - "$REPO" << 'EOF'
+import json, subprocess, sys
+repo = sys.argv[1]
+b = json.load(open(f"{repo}/docs/readme-audit-baseline.json"))
+out = subprocess.run(
+    ["git", "-C", repo, "log", "--oneline", f"{b['audited_commit']}..HEAD",
+     "--", *b["covered_paths"]],
+    capture_output=True, text=True)
+print(out.stdout or f"(empty — docs current as of v{b['version']})")
+print(out.stderr, file=sys.stderr)
+EOF
 ```
 
 If the commit range is empty → report "docs current as of <version>", refresh the baseline date, DONE.

@@ -70,7 +70,7 @@ Restart Claude Code, then in any project tell the agent `/playbook:init`. This c
 ```
 tasks init --provider codex --hooks     # writes AGENTS.md + the apply_patch edit gate
 tasks init --provider antigravity --hooks
-tasks init --provider grok              # grok discovers the hooks natively
+tasks init --provider grok              # grok finds the hooks natively; trust them once with /hooks-trust
 tasks init --provider pi                # the launcher itself enforces the gates
 ```
 

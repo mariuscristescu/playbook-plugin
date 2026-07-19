@@ -80,7 +80,7 @@ The review commands exist because an agent that reviews its own plan inside the 
 
 ## Skills (agent-loaded)
 
-Six skill bundles ship with the plugin; `tasks bootstrap` lists them so the agent knows they exist:
+Six skill bundles ship with the plugin, discovered by the agent harness's plugin skill mechanism (not printed by `tasks bootstrap` — that prints the mind map, pending tasks, and CLI reference):
 
 | Skill | What it does |
 |---|---|
