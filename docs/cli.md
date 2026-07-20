@@ -36,7 +36,7 @@ The review commands exist because an agent that reviews its own plan inside the 
 
 **`tasks retro [--since N]`** — project retrospective across completed tasks: what got built, what patterns recur, where the workflow fought you. Input for pruning the mind map and improving future plans.
 
-**`tasks global-retro-collect --since DATE ROOT [ROOT...]`** — collect a retro archive across several playbook projects (e.g. multiple VMs or repos) into one place, for cross-project analysis.
+**`tasks global-retro-collect --since DATE ROOT [ROOT...]`** — collect a retro archive across several playbook projects (e.g. multiple VMs or repos) into one place, for cross-project analysis. Collects each user's lane on multi-user repos (`.agent/<user>/` tasks and chat logs), not just the root.
 
 **`tasks intent <N>`** — vertical retro of one finished task: several blind extractions infer the task's intent from its different layers (chat, plan, code, tests), the disagreements get reconciled with you, and the distilled result is written to `INTENT.md`. Surfaces the gap between what you asked for and what the trace says happened.
 
@@ -48,7 +48,7 @@ The review commands exist because an agent that reviews its own plan inside the 
 
 ## Health & merge
 
-**`tasks doctor`** — harness health check: project structure, config shape, judge pins, hook wiring, session state, encoding. Advisory findings warn but never fail — doctor's contract is to inform, not block. In the plugin's own source checkout it additionally warns when shipped features have moved past the last README audit (silent everywhere else).
+**`tasks doctor`** — harness health check: project structure, config shape, judge pins, hook wiring, session state, per-lane gate-logging health, encoding. Advisory findings warn but never fail — doctor's contract is to inform, not block. In the plugin's own source checkout it additionally warns when shipped features have moved past the last README audit (silent everywhere else).
 
 **`tasks merge-doctor`** — audit a multi-user repo before/after a merge for the three things plain `git merge` gets wrong in playbook repos: stranded conflict markers in prose files, per-user namespace cross-contamination, and legacy `.agent/` paths.
 

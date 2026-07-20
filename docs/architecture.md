@@ -47,6 +47,8 @@ A second Claude process that watches the front agent's session transcript increm
 
 Blind by construction: a judge gets the repo but not your conversation, so it can't anchor to whatever was already agreed in chat. Single judge (`plan-review` / `impl-review`) writes findings into the task.md; the panel (`panel-review`) fans out to every seat in `models.json` in parallel and writes `judge.md`. Judge output is triaged, not obeyed — the task template's review gates require an accept/park/reject decision per finding.
 
+Since v1.4.3 the judge process is also read-only: sandboxed with the project mounted no-write, so a judge physically cannot edit the repo or task.md. Because that OS containment is unavailable on some platforms (Windows, nested sandboxes), a working-tree tamper guard backs it up — the review paths snapshot git status + the task.md hash before and after, and if a judge changed anything the review is saved with a loud TAMPER banner, ingestion is refused, and the run exits non-zero.
+
 ## Tests
 
 `tests/` — stdlib-unittest suites (no external deps), one file per subsystem: invocation contracts for agy/grok, model-availability machinery, config resolution, mind-map sorting, merge ref-integrity, README-drift detection. Run any file directly: `python3 tests/test_<name>.py`.

@@ -36,7 +36,7 @@ Because state lives in the file and not in memory, execution survives context co
 
 **The mind map** (`MIND_MAP.md`) is the project's memory - persistent across tasks and sessions. It captures both directions: intent and goals from the top down, architecture and structure from the bottom up. A new agent reads it at session start and is oriented in seconds, not minutes. Session thirty picks up from session one without re-learning anything.
 
-**The judge** reads the task plan before any code gets written. It sees the full codebase but not your conversation - no anchoring to whatever approach you already committed to in chat. On complex tasks, run a panel of judges across several models and providers - the hit rate on catching real problems goes up. The panel comes from your `.agent/models.json`, and `tasks models check` / `tasks models select` keep the pins alive as providers retire models ([how to set up and maintain the panel](docs/configuration.md)).
+**The judge** reads the task plan before any code gets written. It sees the full codebase but not your conversation - no anchoring to whatever approach you already committed to in chat. On complex tasks, run a panel of judges across several models and providers - the hit rate on catching real problems goes up. The panel comes from your `.agent/models.json`, and `tasks models check` / `tasks models select` keep the pins alive as providers retire models ([how to set up and maintain the panel](docs/configuration.md)). Judges run read-only - sandboxed so they can't touch the repo or task files, with a working-tree tamper check as the backstop where OS containment isn't available.
 
 **The chat log** records every message you send. A gate in the design phase checks the task against it - pulling in things you said conversationally but never wrote down. If your messages and the task don't agree, that's a bug in the plan, not just a documentation gap.
 
@@ -139,4 +139,4 @@ Not everything needs a task. Questions, shell commands, docs, git - just ask. Th
 
 Works on macOS, Linux, and Windows.
 
-<!-- readme-audit: v1.4.2 @ 2026-07-18 -->
+<!-- readme-audit: v1.4.3 @ 2026-07-20 -->
