@@ -144,6 +144,7 @@ class GrokAdapter(ProviderAdapter):
         result = _sandbox.run(
             "grok", agent_args,
             project_root=self._project_root,
+            project_writable=False,   # judge is read-only — cannot mutate repo/task.md
             env=env,
             input=None,
             capture_output=True, text=True, timeout=timeout_secs, encoding="utf-8",
