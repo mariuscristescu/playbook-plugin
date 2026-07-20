@@ -269,6 +269,89 @@ def _panel_triage_frame() -> list[str]:
     ]
 
 
+def _snapshot_repo_state(project_path: Path, task_file: Path | None) -> dict:
+    """Capture the repo's mutable state before spawning judges, so a rogue judge
+    that writes the working tree can be detected afterward (#1 tamper guard).
+
+    Judges are read-only evaluators; nothing they run should change the repo. On
+    platforms with OS containment `project_writable=False` blocks writes, but the
+    sandbox falls back to UNCONTAINED direct exec when no seatbelt/bwrap exists
+    (Windows) or when already nested — there this snapshot/compare is the ONLY
+    tamper defense, so it is mandatory, not belt-and-braces.
+
+    Two best-effort signals:
+      - `git status --porcelain`: repo-wide; catches edits to tracked files and
+        new non-ignored files (e.g. a rogue's task_audit.md). Gitignored runtime
+        churn (.agent/**/sessions, chat_log, bash_history) is excluded by design,
+        so legitimate judge-session hook writes don't false-positive. None when
+        the project is not a git repo.
+      - sha256 of task.md: the primary tamper target (the rogue rewrote work-plan
+        gates); the only signal when the project isn't a git repo.
+    """
+    import subprocess
+    porcelain = None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(project_path), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+        )
+        if r.returncode == 0:
+            porcelain = r.stdout
+    except (OSError, subprocess.SubprocessError):
+        porcelain = None
+    task_hash = None
+    if task_file and task_file.exists():
+        import hashlib
+        task_hash = hashlib.sha256(task_file.read_bytes()).hexdigest()
+    return {"porcelain": porcelain, "task_hash": task_hash}
+
+
+def _detect_tamper(project_path: Path, task_file: Path | None, before: dict) -> list[str]:
+    """Compare current repo state against a `_snapshot_repo_state` result.
+    Returns human-readable change descriptions (empty list = no tamper).
+
+    Known gap: a judge editing a file that was ALREADY dirty before the run
+    produces an identical porcelain line, so a content-only change to an
+    already-modified non-task.md file is not caught. task.md itself is covered
+    by its hash regardless. Acceptable — the rogue incident created new files
+    and rewrote task.md, both caught here."""
+    after = _snapshot_repo_state(project_path, task_file)
+    changes: list[str] = []
+    b_porc, a_porc = before.get("porcelain"), after.get("porcelain")
+    if b_porc is not None and a_porc is not None and b_porc != a_porc:
+        new_lines = set(a_porc.splitlines()) - set(b_porc.splitlines())
+        for line in sorted(new_lines):
+            changes.append(f"working tree: {line.strip()}")
+    b_hash, a_hash = before.get("task_hash"), after.get("task_hash")
+    if b_hash and a_hash and b_hash != a_hash:
+        rel: Path | str = task_file
+        try:
+            rel = task_file.relative_to(project_path)
+        except (ValueError, AttributeError):
+            pass
+        changes.append(f"task.md content changed ({rel})")
+    return changes
+
+
+def _tamper_banner(changes: list[str]) -> str:
+    """Loud banner naming what a judge mutated during a review run."""
+    bar = "!" * 60
+    lines = [
+        bar,
+        "!! TAMPER DETECTED — a judge modified the repo during review !!",
+        bar,
+        "Judges are read-only evaluators; these changes are NOT trustworthy work:",
+    ]
+    lines += [f"  - {c}" for c in changes]
+    lines += [
+        "Do NOT ingest this review into task.md. Inspect and restore:",
+        "  git status && git diff    # then: git checkout -- <path> / rm <new file>",
+        bar,
+    ]
+    return "\n".join(lines)
+
+
 def _cmd_prepare_merge(project_path: Path, target: str, dry_run: bool) -> None:
     """Prepare current branch's Playbook state to merge cleanly into target."""
     import subprocess
@@ -1552,6 +1635,18 @@ def main():
             except Exception as e:
                 return label, f"(error: {e})"
 
+        # Judge tamper guard (#1): judges are read-only evaluators, so snapshot
+        # the repo before spawning and refuse to trust the run if the working
+        # tree changed under them. On uncontained platforms (no seatbelt/bwrap,
+        # or nested) project_writable=False was a no-op — this snapshot is then
+        # the ONLY defense, so warn.
+        from provider import sandbox as _sandbox_mod
+        if not _sandbox_mod.containment_available():
+            print("  ⚠ judges running UNCONTAINED (no usable OS sandbox here) — "
+                  "the tamper guard is the only defense against repo mutation.",
+                  file=sys.stderr, flush=True)
+        _tamper_before = _snapshot_repo_state(project_path, task_file)
+
         # Run all judges in parallel
         import concurrent.futures
         results = {}
@@ -1561,6 +1656,8 @@ def main():
                 label, output = future.result()
                 results[label] = output
                 print(f"  [{label}] done", flush=True)
+
+        _tamper_changes = _detect_tamper(project_path, task_file, _tamper_before)
 
         # Classify each judge as succeeded vs failed — a failed judge must NOT
         # read as a clean empty review (T139) or a successful one. Shared
@@ -1575,6 +1672,11 @@ def main():
         # Write judge.md (path already set above based on task_file presence)
         display_label = task_path or extra_prompt[:60]
         lines = [f"# Panel {review_label.title()} — {display_label}\n"]
+        # Tamper banner rides at the very top of judge.md (#1) — the reading
+        # agent must see it before any finding. judge.md is still written (paid
+        # verdicts are never discarded), but the run exits non-zero below.
+        if _tamper_changes:
+            lines = [_tamper_banner(_tamper_changes) + "\n\n"] + lines
         lines.append(f"**Judges:** {succeeded}/{len(results)} succeeded | **Web search:** {'yes' if web_search else 'no'} | **Timeout:** {timeout_secs}s\n")
         if failed:
             lines.append(f"**⚠ Failed judges:** {', '.join(sorted(failed))} — see their blocks below for the exit code / stderr. NOT a clean empty review.\n")
@@ -1606,6 +1708,13 @@ def main():
                         f"${panel_budget} cap — raise judge_budget_usd in "
                         f".agent/config.json or pass --budget to re-run them.")
         print(summary, flush=True)
+
+        # Tamper hard-stop (#1): a judge mutated the working tree. judge.md is
+        # already written (with the banner on top) so verdicts aren't lost, but
+        # the run exits non-zero and the operator must NOT ingest it into task.md.
+        if _tamper_changes:
+            print("\n" + _tamper_banner(_tamper_changes), file=sys.stderr, flush=True)
+            sys.exit(1)
 
         # Hard stop on probe-confirmed dead pins (task 012). Pattern
         # classification alone is only a hint (failure tails can echo prompt
@@ -1772,6 +1881,15 @@ def main():
             )
             sys.exit(1)
 
+        # Judge tamper guard (#1), same contract as the panel path: snapshot the
+        # repo before spawning the single judge; warn if it will run uncontained.
+        from provider import sandbox as _sandbox_mod
+        if not _sandbox_mod.containment_available():
+            print("  ⚠ judge running UNCONTAINED (no usable OS sandbox here) — "
+                  "the tamper guard is the only defense against repo mutation.",
+                  file=sys.stderr, flush=True)
+        _tamper_before = _snapshot_repo_state(project_path, task_file)
+
         if backend == "claude":
             claude_bin = shutil.which("claude")
             if not claude_bin:
@@ -1809,6 +1927,7 @@ def main():
                     "claude",
                     claude_args,
                     project_root=project_path,
+                    project_writable=False,   # judge is read-only — cannot mutate repo/task.md
                     env=env,
                     input=full_prompt,
                     capture_output=True,
@@ -1830,7 +1949,15 @@ def main():
             # Codex has no system prompt — inline context into the user prompt
             full_prompt = f"{system_context}\n\n---\n\n{prompt}"
 
-            codex_log = task_file.parent / "judge-codex.log"
+            # Under the read-only judge sandbox (project_writable=False), codex
+            # cannot write its `-o` transcript into the project tree. Point `-o`
+            # at a temp file — system temp (/tmp, /var/folders) stays writable
+            # under both seatbelt and bwrap — and copy it into the task dir from
+            # the parent, after the tamper check (see the save block below).
+            import tempfile as _tempfile
+            _codex_log_fd, codex_log = _tempfile.mkstemp(suffix="-judge-codex.log")
+            os.close(_codex_log_fd)
+            codex_log = Path(codex_log)
             # Bypass flag (--dangerously-bypass-approvals-and-sandbox) inserted
             # after `exec` by provider.sandbox._compose_agent_argv.
             codex_args = ["exec"]
@@ -1857,6 +1984,7 @@ def main():
                 result = _sandbox.run(
                     "codex", codex_args,
                     project_root=project_path,
+                    project_writable=False,   # judge is read-only — cannot mutate repo/task.md
                     env=codex_env,
                     input=full_prompt,
                     capture_output=True,
@@ -1904,6 +2032,7 @@ def main():
                 result = _sandbox.run(
                     "agy", agy_args,
                     project_root=project_path,
+                    project_writable=False,   # judge is read-only — cannot mutate repo/task.md
                     env=agy_env,
                     input=full_prompt,
                     capture_output=True,
@@ -1959,6 +2088,7 @@ def main():
                 result = _sandbox.run(
                     "grok", grok_args,
                     project_root=project_path,
+                    project_writable=False,   # judge is read-only — cannot mutate repo/task.md
                     env=grok_env,
                     capture_output=True,
                     text=True,
@@ -2012,6 +2142,7 @@ def main():
                 result = _sandbox.run(
                     "pi", pi_args,
                     project_root=project_path,
+                    project_writable=False,   # judge is read-only — cannot mutate repo/task.md
                     env=pi_env,
                     capture_output=True,
                     text=True,
@@ -2026,6 +2157,11 @@ def main():
             print(result.stdout, end="", flush=True)
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr, flush=True)
+
+        # Tamper check (#1): did the judge mutate the working tree? Computed here;
+        # the log is still saved below (paid work preserved) but the run hard-stops
+        # non-zero at the end so the operator won't ingest a tampered review.
+        _tamper_changes = _detect_tamper(project_path, task_file, _tamper_before)
 
         # Save output — backend-specific log files
         log_name = {
@@ -2066,8 +2202,23 @@ def main():
             # — and OVERWRITTEN on each successful re-review, else a second run
             # prints "Saved" while silently keeping the stale log (task 014 I4).
             if backend == "codex":
-                if not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
-                    judge_log.write_text(result.stdout or "", encoding="utf-8")
+                # codex wrote its clean final message to a temp file outside the
+                # RO project; read it here (parent, post-tamper) and copy into the
+                # task dir. stdout is the fallback when the temp file is empty.
+                # Always overwrite on a successful review so a re-review can't
+                # silently keep a stale log (task 014 I4).
+                codex_out = ""
+                try:
+                    codex_out = codex_log.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+                try:
+                    codex_log.unlink()
+                except OSError:
+                    pass
+                judge_log.write_text(
+                    codex_out if codex_out.strip() else (result.stdout or ""),
+                    encoding="utf-8")
             else:
                 judge_log.write_text(result.stdout or "", encoding="utf-8")
             print(f"\nSaved: {judge_log.relative_to(project_path)}", flush=True)
@@ -2097,6 +2248,13 @@ def main():
                 check_pins(project_path, probe=False, extra_specs=[_sj_spec]),
                 confirmed)
             print(render_report(report), file=sys.stderr)
+            sys.exit(1)
+
+        # Tamper hard-stop (#1): the single judge mutated the working tree. Log
+        # is already saved above; exit non-zero with the loud banner so the
+        # operator inspects/restores instead of trusting the review.
+        if _tamper_changes:
+            print("\n" + _tamper_banner(_tamper_changes), file=sys.stderr, flush=True)
             sys.exit(1)
 
         sys.exit(result.returncode)
@@ -2893,6 +3051,28 @@ def main():
         except Exception as e:  # doctor must never crash on an advisory check
             warn("readme: drift check ran", f"skipped ({e})")
 
+        # 1e. Gate-logging health across ALL lanes (bug report #4). state-echo
+        # writes `**[G<task>:…]**` per gate transition into each lane's chat_log;
+        # if those stop while tasks keep completing, retro attribution silently
+        # degrades. Scan every lane — NOT just resolve_agent_dir's current one —
+        # because the reported case is one dev running doctor while a PEER's lane
+        # is the broken one (task 018 panel T7). Advisory; never crashes doctor.
+        try:
+            from tasks.gate_logging import done_task_numbers, gate_logging_gap
+            from tasks.global_retro_collect import _agent_lanes
+            for lane_user, lane_rel in _agent_lanes(project_path):
+                chat_log = project_path / lane_rel / "chat_log.md"
+                if not chat_log.is_file():
+                    continue
+                text = chat_log.read_text(encoding="utf-8", errors="replace")
+                done = done_task_numbers(project_path / lane_rel / "tasks")
+                gap = gate_logging_gap(text, done)
+                if gap:
+                    label = lane_user or "(root)"
+                    warn(f"gate-logging: lane '{label}'", gap)
+        except Exception as e:  # advisory — doctor must never crash here
+            warn("gate-logging: lane scan ran", f"skipped ({e})")
+
         # 2. Unicode
         stdout_enc = getattr(sys.stdout, "encoding", "unknown") or "unknown"
         check("unicode: stdout encoding", "utf" in stdout_enc.lower(), stdout_enc)
@@ -3407,16 +3587,24 @@ def main():
         blocks = text.split("\n---\n")
         lines = []
         for block in blocks:
+            # Entry header format grew a ` (provider/pid)` suffix with multi-provider
+            # tagging (commit 0fca4b0), e.g. `**[M12]** [… UTC] `HOST` (claude/pid-9)`.
+            # The suffix must be OPTIONAL (legacy entries lack it, and requiring it
+            # made `tasks log` silently print nothing — bug report #5b) and CAPTURED
+            # (its provider token is the real agent; the backticked field is now just
+            # `HOST`). Prefer the suffix provider; fall back to the backticked name.
             m = re.match(
-                r'\*\*(\[M\d+\])\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2} UTC\] `(\w+)`\s*\n+(.*)',
+                r'\*\*(\[M\d+\])\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2} UTC\] '
+                r'`(\w+)`(?:\s*\(([^)/]+)/[^)]*\))?\s*\n+(.*)',
                 block.strip(), re.DOTALL
             )
             if m:
-                mid, ts, role, body = m.groups()
+                mid, ts, role, provider, body = m.groups()
+                agent = provider or role
                 body = " ".join(body.split())
                 if len(body) > width:
                     body = body[:width - 1] + "…"
-                lines.append(f"{mid} {ts} {role:<6} {body}")
+                lines.append(f"{mid} {ts} {agent:<6} {body}")
         if last_n is not None:
             lines = lines[-last_n:]
         for line in lines:

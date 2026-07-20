@@ -591,6 +591,23 @@ def _wrapped_argv(
     return inner_argv
 
 
+def containment_available() -> bool:
+    """True if `run(project_writable=False)` would actually deny project writes.
+
+    Mirrors `_wrapped_argv`'s decision so callers (the judge tamper guard) can
+    tell when a judge will run UNCONTAINED — already sandboxed (nested
+    short-circuit), seatbelt unusable/nested on macOS, or no seatbelt/bwrap
+    primitive at all (e.g. Windows). On those paths OS write-denial is a no-op
+    and the before/after tamper snapshot is the only defense."""
+    if is_sandboxed():
+        return False
+    if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
+        return _seatbelt_usable()
+    if shutil.which("bwrap"):
+        return True
+    return False
+
+
 def _child_env(env: dict[str, str] | None) -> dict[str, str]:
     child_env = dict(os.environ) if env is None else dict(env)
     child_env["PLAYBOOK_SANDBOXED"] = "1"
