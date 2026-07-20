@@ -200,8 +200,15 @@ write_counter() {
     if [ -f "$file" ]; then
         grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
     fi
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-    mv "$tmp" "$file"
+    # Fail-OPEN and fail-LOUD: a write failure here (e.g. a Windows AV lock on
+    # the atomic mv) must never kill the caller under `set -e` — that silently
+    # freezes the gate_key and stops all gate logging (bug report #4). Record it
+    # in PLAYBOOK_WRITE_FAILED so the hook can surface it, and always return 0.
+    if ! { printf '%s=%s\n' "$key" "$value" >> "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null; }; then
+        rm -f "$tmp" 2>/dev/null || true
+        PLAYBOOK_WRITE_FAILED=true
+    fi
+    return 0
 }
 
 # reset_counters FILE
