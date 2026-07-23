@@ -210,3 +210,57 @@ def hooks_check_report(project_path, env=None) -> list[tuple[str, str]]:
         for issue in hook_command_issues(path):
             report.append((f"hooks: {path}", issue))
     return report
+
+
+def grok_enforcement_issues(env=None) -> list[str]:
+    """Doctor advisory for ~/.grok/hooks/playbook-enforcement.json (task 020).
+
+    Returns human-readable issues: missing file (when we can detect Grok use is
+    in play is left to the caller), invalid JSON, or command paths that no
+    longer exist (stale after upgrade/move → silent fail-open).
+    Empty list = clean or not applicable. Never raises.
+    """
+    import os
+    import re
+
+    env = os.environ if env is None else env
+    override = env.get("PLAYBOOK_GROK_HOOKS_DIR")
+    if override:
+        path = Path(override) / "playbook-enforcement.json"
+    else:
+        path = Path.home() / ".grok" / "hooks" / "playbook-enforcement.json"
+
+    if not path.is_file():
+        return [
+            f"missing {path} — run `tasks init --provider grok` "
+            "(auto-installs always-trusted global enforcement; restart Grok after)"
+        ]
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (ValueError, OSError) as e:
+        return [f"unreadable/invalid JSON at {path} ({e})"]
+
+    issues: list[str] = []
+    hooks_obj = data.get("hooks") if isinstance(data, dict) else None
+    # Extract absolute paths inside bash "..." commands
+    path_re = re.compile(r'bash\s+"([^"]+)"')
+    for event, command in _iter_commands(hooks_obj):
+        if not isinstance(command, str):
+            issues.append(f"{event}: non-string command")
+            continue
+        m = path_re.search(command)
+        if not m:
+            continue
+        script = Path(m.group(1))
+        if not script.is_file():
+            issues.append(
+                f"{event}: script missing ({script}) — re-run "
+                "`tasks init --provider grok` after upgrade/move"
+            )
+    return issues
+
+
+def grok_enforcement_report(env=None) -> list[tuple[str, str]]:
+    """Doctor payload: (label, detail) for the Grok global enforcement file."""
+    return [("hooks: grok enforcement", issue) for issue in grok_enforcement_issues(env=env)]
