@@ -213,22 +213,29 @@ class GrokAdapter(ProviderAdapter):
         """No file writes needed — grok reads .claude/settings.json natively.
 
         Prints the one-time folder-trust step, the only part that needs a
-        human, plus a space-in-path note. Idempotent.
+        human, plus a hook-command-form note. Idempotent.
 
-        SPACE-IN-PATH (task 014): grok expands `${CLAUDE_PLUGIN_ROOT}` in a
-        hook `command` and then WORD-SPLITS the result (a plain POSIX shell
-        does the same), so an unquoted command whose resolved path contains a
-        SPACE breaks — the hook never launches and enforcement fail-opens.
-        hooks.json now double-quotes every command
-        (`"${CLAUDE_PLUGIN_ROOT}/scripts/<hook>"`), which keeps the path a
-        single argument under both grok and a real shell — verified at the
-        shell level (quoted expansion = 1 arg) and against grok
-        (quoted spaced command launches; bare does not). Normal installs
-        (~/.claude/plugins/.../playbook/<ver>) are space-free, so the quoting
-        is a no-op there; it hardens spaced checkouts like this dogfooding
-        iCloud dir. If enforcement still doesn't fire under grok, confirm the
-        folder is trusted (/hooks-trust) and that the installed plugin is
-        v1.4.0+.
+        HOOK COMMAND FORM (task 014 → task 019): grok resolves a hook
+        `command` by its shape. A command string with NO spaces is treated as
+        a PATH relative to hooks.json — `${CLAUDE_PLUGIN_ROOT}` is expanded but
+        any surrounding quotes are kept literally, so the wrapped form
+        `"${CLAUDE_PLUGIN_ROOT}/scripts/<hook>"` resolves to a nonexistent
+        `hooks/"<abs-path>"` and fails command-not-found in 0ms, fail-open.
+        This is the field bug (AloVet 2026-07-20) that falsified task 014's
+        "grok word-splits like a POSIX shell" model — the quote-wrapping added
+        in ff0e12c broke all six plugin hooks on real grok while it merely
+        looked harmless on Claude Code. A command string WITH a space is run as
+        an inline shell command instead, where quotes are honored — proven by
+        the project-level `bash "$CLAUDE_PROJECT_DIR/.claude/hooks/monitor-nudge.sh"`
+        hook, which grok runs green in the same turn the wrapped plugin hooks
+        fail. hooks.json therefore ships the dual-host form
+        `bash "${CLAUDE_PLUGIN_ROOT}/scripts/<hook>"`: the leading `bash ` forces
+        grok's inline-shell path (quotes honored, no literal-path join), and on
+        Claude Code — which already runs hook commands through a shell — the
+        quoted argument keeps a spaced plugin root (e.g. this iCloud dogfooding
+        checkout) a single argument. If enforcement still doesn't fire under
+        grok, confirm the folder is trusted (/hooks-trust) and that the
+        installed plugin is v1.4.4+.
         """
         settings = project_root / ".claude" / "settings.json"
         if not settings.exists():
@@ -237,11 +244,13 @@ class GrokAdapter(ProviderAdapter):
         print("  grok hooks   auto-discovered from .claude/settings.json (Claude compat)")
         print("               one-time step: run /hooks-trust inside a grok session in this")
         print("               project, or project hooks are silently skipped")
-        # hooks.json quotes the command, so a spaced plugin path is handled;
-        # still surface it as a heads-up since it's the fragile area.
+        # hooks.json ships the dual-host `bash "..."` command form, so both a
+        # spaced plugin root (Claude) and grok's inline-shell path are handled;
+        # surface it only as a heads-up since it's the historically fragile area.
         if " " in str(Path(__file__).resolve()):
-            print("               note: plugin path contains a space — handled by quoted hook")
-            print("               commands (hooks.json); if a gate doesn't fire, re-check trust.")
+            print("               note: plugin path contains a space — handled by the dual-host")
+            print("               `bash \"...\"` hook command form (hooks.json); if a gate")
+            print("               doesn't fire, re-check trust (/hooks-trust).")
 
     def uninstall_hooks(self, project_root: Path) -> None:
         """Nothing to remove — grok reads the shared .claude/settings.json."""

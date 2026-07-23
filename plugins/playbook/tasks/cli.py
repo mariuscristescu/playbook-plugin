@@ -3073,6 +3073,21 @@ def main():
         except Exception as e:  # advisory — doctor must never crash here
             warn("gate-logging: lane scan ran", f"skipped ({e})")
 
+        # 1f. Hook command quoting (task 019 / field bug AloVet 2026-07-20).
+        # Every hooks.json `command` was quote-wrapped, which grok resolves as
+        # a literal path -> command-not-found -> all six hooks fail-open. Scan
+        # the copies the host actually loads (CLAUDE_PLUGIN_ROOT, the copy next
+        # to this module, the workspace source tree, and grok's own ~/.grok
+        # copies), not just the source tree — a clean checkout is not proof the
+        # running install is clean. Missing copies are silently skipped.
+        # Advisory; never crashes doctor.
+        try:
+            from tasks.hooks_check import hooks_check_report
+            for _label, _detail in hooks_check_report(project_path):
+                warn(_label, _detail)
+        except Exception as e:  # advisory — doctor must never crash here
+            warn("hooks: command-quoting check ran", f"skipped ({e})")
+
         # 2. Unicode
         stdout_enc = getattr(sys.stdout, "encoding", "unknown") or "unknown"
         check("unicode: stdout encoding", "utf" in stdout_enc.lower(), stdout_enc)
